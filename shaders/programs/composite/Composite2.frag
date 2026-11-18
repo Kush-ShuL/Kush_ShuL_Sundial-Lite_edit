@@ -13,30 +13,59 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Reflection filter stage 1
+//  Reflection filter stage 2
 //
-
-layout(location = 0) out vec4 texBuffer4;
 
 in vec2 texcoord;
 
 #include "/settings/GlobalSettings.glsl"
+
+#ifdef HALF_RES_REFLECTION
+    layout(location = 0) out vec4 texBuffer8;
+#else
+    layout(location = 0) out vec4 texBuffer4;
+#endif
+
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/GbufferData.glsl"
 #include "/libs/ReflectionFilter.glsl"
 
 void main() {
-    ivec2 texel = ivec2(texcoord * screenSize);
-    vec4 reflectionColor = texelFetch(colortex4, texel, 0);
+    #ifdef HELIAN_SR_ACTIVE
+        #ifdef HALF_RES_REFLECTION
+            if (any(greaterThanEqual(gl_FragCoord.xy, vec2(srTextureSizeLow(colortex8, 0))))) discard;
+        #else
+            if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
+        #endif
+    #endif
+    #ifdef HALF_RES_REFLECTION
+        ivec2 texel = ivec2(gl_FragCoord.xy);
+    #else
+        ivec2 texel = ivec2(texcoord * screenSize);
+    #endif
+    vec4 reflectionColor = getReflectionTexel(texel);
+    if (!(reflectionColor.w > 1e-6)) {
+        discard;
+    }
     float depth = getWaterDepth(texcoord);
     #ifdef LOD
         depth += float(depth == 1.0) * (getLodDepthWater(texcoord) - 1.0);
     #endif
-    if (abs(depth) < 1.0 && reflectionColor.w > 1e-6) {
-        reflectionColor = reflectionFilter(reflectionColor, texel, 6.0, false);
+    if (abs(depth) < 1.0) {
+        reflectionColor = reflectionFilter(reflectionColor, texel, 2.5, false);
+    } else {
+        discard;
     }
-    texBuffer4 = reflectionColor;
+    #ifdef HALF_RES_REFLECTION
+        texBuffer8 = reflectionColor;
+    #else
+        texBuffer4 = reflectionColor;
+    #endif
 }
 
+#ifdef HALF_RES_REFLECTION
+/* DRAWBUFFERS:8 */
+#else
 /* DRAWBUFFERS:4 */
+#endif

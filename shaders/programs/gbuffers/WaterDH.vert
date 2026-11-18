@@ -13,7 +13,7 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Gbuffer for Distant Horizons translucent terrain
+//  Gbuffer for Distant Horizons transparent terrain
 //
 
 #ifndef DISTANT_HORIZONS
@@ -52,11 +52,8 @@ void main() {
     vec3 bitangent = normalize(gl_NormalMatrix * vec3(0.0, abs(gl_Normal.y) - 1.0, abs(gl_Normal.y)));
     tbnMatrix = mat3(tangent, bitangent, normal);
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

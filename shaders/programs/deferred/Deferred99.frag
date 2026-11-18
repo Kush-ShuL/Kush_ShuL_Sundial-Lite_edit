@@ -27,12 +27,13 @@ uniform sampler2D colortex18;
 #include "/libs/Uniform.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     ivec2 texel = ivec2(gl_FragCoord.st);
-    vec4 trasnparent = texelFetch(colortex16, texel, 0);
-    float overlay = clamp(trasnparent.w * 1e+3, 0.0, 1.0) * float(texelFetch(depthtex1, texel, 0).r == 1.0);
-    texBuffer0 = mix(texelFetch(colortex0, texel, 0), trasnparent, overlay);
-    texBuffer1 = mix(texelFetch(colortex1, texel, 0), texelFetch(colortex17, texel, 0), overlay);
-    texBuffer2 = mix(texelFetch(colortex2, texel, 0), texelFetch(colortex18, texel, 0), overlay);
+    vec4 trasnparent = srTexelFetchLow(colortex16, texel, 0);
+    float overlay = clamp(trasnparent.w * 1e+3, 0.0, 1.0) * float(srTexelFetchLow(depthtex1, texel, 0).r == 1.0);
+    texBuffer0 = mix(srTexelFetchLow(colortex0, texel, 0), trasnparent, overlay);
+    texBuffer1 = mix(srTexelFetchLow(colortex1, texel, 0), srTexelFetchLow(colortex17, texel, 0), overlay);
+    texBuffer2 = mix(srTexelFetchLow(colortex2, texel, 0), srTexelFetchLow(colortex18, texel, 0), overlay);
 }
 
 /* DRAWBUFFERS:012 */

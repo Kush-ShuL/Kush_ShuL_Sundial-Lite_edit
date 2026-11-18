@@ -4,29 +4,16 @@ const float CLOUD_BLOCKY_TOP_HEIGHT = CLOUD_BLOCKY_HEIGHT + CLOUD_BLOCKY_THICKNE
 
 const float CLOUD_REALISTIC_CENTER_THICKNESS = CLOUD_REALISTIC_THICKNESS * CLOUD_REALISTIC_CENTER;
 const float CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE = CLOUD_REALISTIC_THICKNESS * CLOUD_REALISTIC_SHADOWLIGHT_STEPSCALE;
+const float CLOUD_REALISTIC_SHADOW_LIGHT_SAMPLE_LENGTH = CLOUD_REALISTIC_SHADOWLIGHT_SAMPLES * CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE + 0.5 * CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE;
 const float CLOUD_REALISTIC_SAMPLE_DENSITY = 0.001 * CLOUD_REALISTIC_DENSITY;
 
 const float cloudBottomHeight = earthRadius + CLOUD_REALISTIC_HEIGHT + 500.0;
 const float cloudTopHeight = earthRadius + CLOUD_REALISTIC_HEIGHT + CLOUD_REALISTIC_THICKNESS + 500.0;
 const float cloudCenterHeight = earthRadius + CLOUD_REALISTIC_HEIGHT + CLOUD_REALISTIC_CENTER_THICKNESS + 500.0;
 
-#ifdef CLOUD_IN_REFLECTION
-    const int cloudRealisticHqSamples = CLOUD_REALISTIC_HQ_SAMPLES_REFLECTION;
-    const int cloudRealisticShadowLightSamples = CLOUD_REALISTIC_SHADOWLIGHT_SAMPLES_REFLECTION;
-    const int cloudRealisticShadowLightOctaves = CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES_REFLECTION;
-    const int cloudRealisticOctaves = CLOUD_REALISTIC_OCTAVES_REFLECTION;
-#else
-    const int cloudRealisticHqSamples = CLOUD_REALISTIC_HQ_SAMPLES;
-    const int cloudRealisticShadowLightSamples = CLOUD_REALISTIC_SHADOWLIGHT_SAMPLES;
-    const int cloudRealisticShadowLightOctaves = CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES;
-    const int cloudRealisticOctaves = CLOUD_REALISTIC_OCTAVES;
-#endif
-
 float blockyCloudDensity(ivec2 cloudTexel) {
     return step(1.0 - CLOUD_BLOCKY_AMOUNT, texelFetch(noisetex, cloudTexel, 0).z);
 }
-
-float cloudMiePhase(float cosAngle, float g);
 
 vec4 blockyCloud(vec3 baseColor, vec3 atmosphere, vec3 worldPos, vec3 worldDir, vec3 shadowDir, vec3 skyColorUp, float backDepth, out float cloudDepth) {
     cloudDepth = -1.0;
@@ -35,10 +22,10 @@ vec4 blockyCloud(vec3 baseColor, vec3 atmosphere, vec3 worldPos, vec3 worldDir, 
     float topIntersection = (CLOUD_BLOCKY_TOP_HEIGHT - worldHeight) / worldDir.y;
     float bottomIntersection = (CLOUD_BLOCKY_HEIGHT - worldHeight) / worldDir.y;
 
-    float intersection = max(-clamp(topIntersection * bottomIntersection, 0.0, 1.0), min(topIntersection, bottomIntersection));
+    float intersection = topIntersection * bottomIntersection > 0.0 ? min(topIntersection, bottomIntersection) : 0.0;
     vec4 result = vec4(baseColor, 0.0);
     backDepth -= intersection * step(1e-5, backDepth);
-    if (intersection >= 0.0 && 0.0 <= backDepth) {
+    if (intersection > 0.0 && 0.0 <= backDepth) {
         vec2 wind = frameTimeCounter * CLOUD_SPEED * vec2(4.0, 2.0);
         vec2 cloudOffset = worldPos.xz + intersection * worldDir.xz;
         vec3 cloudPos = vec3(
@@ -108,10 +95,7 @@ vec4 blockyCloud(vec3 baseColor, vec3 atmosphere, vec3 worldPos, vec3 worldDir, 
                 cloudTexel = (cloudTexel + nextVoxel.xz * dirSigned.xz) & 63;
             }
 
-            float sunCosAngle = clamp(dot(worldDir, shadowDir), -1.0, 1.0);
-            float sunPhase = mix(1.0, cloudMiePhase(sunCosAngle, CLOUD_REALISTIC_MIE_G) / cloudMiePhase(0.0, CLOUD_REALISTIC_MIE_G), CLOUD_REALISTIC_MIE_STRENGTH);
-
-            vec3 cloudColor = sunColor * CLOUD_SUNLIGHT_STRENGTH * (1.1 - sqrt(weatherStrength)) * exp(-sqrt(shadowOpticalDepth) * 3.0) * SUNLIGHT_BRIGHTNESS * sunPhase;
+            vec3 cloudColor = sunColor * 10.0 * (1.1 - sqrt(weatherStrength)) * exp(-sqrt(shadowOpticalDepth) * 3.0) * SUNLIGHT_BRIGHTNESS;
             cloudColor += mix(skyColorUp, atmosphere, vec3(pow2(clamp(worldDir.y, 0.0, 1.0)))) * exp(-0.5 * (1.0 - cloudPos.y) * (1.0 - cloudNormal.y));
 
             float cloudDistance = length(cloudOffset);
@@ -129,15 +113,13 @@ vec4 blockyCloud(vec3 baseColor, vec3 atmosphere, vec3 worldPos, vec3 worldDir, 
 }
 
 vec2 raySphereIntersection(float RdotP, float RdotP2, float R2) {
-    float d = sqrt(RdotP2 + R2);
+    float discriminant = RdotP2 - R2;
+    if (discriminant < 0.0) {
+        return vec2(-1.0);
+    }
+    float d = sqrt(discriminant);
     vec2 result = max(vec2(-1.0), vec2(-RdotP - d, -RdotP + d));
     return result;
-}
-
-float cloudMiePhase(float cosAngle, float g) {
-    float g2 = g * g;
-    float x = inversesqrt(1.0 + g2 - 2.0 * g * cosAngle);
-    return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosAngle * cosAngle)) / (2.0 + g2) * x * x * x;
 }
 
 float baseCloudNoise(vec2 coord) {
@@ -154,6 +136,10 @@ float baseCloudNoise(vec2 coord) {
 }
 
 float realisticCloudDensity(vec3 cloudPos, vec3 wind, float cloudDistance, int octaves, float weights) {
+    #ifdef LQ_REALISTIC_CLOUD
+        octaves = (octaves + 1) / 2;
+    #endif
+
     cloudPos += frameTimeCounter * CLOUD_SPEED * vec3(10.0, -10.0, 5.0);
     float density = baseCloudNoise(cloudPos.xz * 0.00001 / CLOUD_SCALE);
     float weight = 1.0;
@@ -175,58 +161,66 @@ float realisticCloudDensity(vec3 cloudPos, vec3 wind, float cloudDistance, int o
     float cloudAmount = baseCloudAmount + weatherStrength * CLOUD_REALISTIC_RAIN_INCREAMENT * baseCloudAmount;
     density = clamp(density / weights + cloudAmount - CLOUD_REALISTIC_HARDNESS * 10.0 - cloudAmount * heightClamp, 0.0, 1.0);
 
-    return density;
+    // A smooth density onset preserves wispy edges before extinction turns
+    // a long ray-march interval opaque. Keep the dense cloud interior intact.
+    return density * density * (3.0 - 2.0 * density);
 }
 
-float atmosphereAbsorptionGround(float RdotP, float cloudDistance) {
+float atmosphereAbsorption(float RdotP, float cloudDistance) {
     float rayHeight = cloudDistance * sqrt(max(0.0, 1.0 + RdotP)) - earthRadius - 500.0;
     float absorption = pow2(clamp(rayHeight / (CLOUD_REALISTIC_HEIGHT * 4.0), 0.0, 1.0));
 
     return absorption;
 }
 
-const float cloudDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, cloudRealisticOctaves + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
-const float cloudShadowDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, cloudRealisticShadowLightOctaves + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
+#ifdef LQ_REALISTIC_CLOUD
+    const float cloudDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, (CLOUD_REALISTIC_OCTAVES + 1) / 2 + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
+    const float cloudShadowDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, (CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES + 1) / 2 + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
+#else
+    const float cloudDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, CLOUD_REALISTIC_OCTAVES + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
+    const float cloudShadowDensityWeights = (1.0 - pow(CLOUD_REALISTIC_OCTAVE_FADE, CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES + 1.0)) / ((1.0 - CLOUD_REALISTIC_OCTAVE_FADE) * CLOUD_REALISTIC_HARDNESS * 10.0);
+#endif
 
-vec4 sampleRealisticCloud(vec3 cloudPos, vec3 sunDir, vec3 atmosphere, float noise, float sunPhase, float moonPhase) {
+vec4 sampleRealisticCloud(vec3 cloudPos, vec3 sunDir, vec3 atmosphere) {
     vec3 relativeCloudPos = cloudPos - vec3(cameraPosition.x + CLOUD_REALISTIC_OFFSET_X, 0.0, cameraPosition.z + CLOUD_REALISTIC_OFFSET_Z);
     float cloudDistance2 = dot(relativeCloudPos, relativeCloudPos);
     float cloudDistance = inversesqrt(cloudDistance2);
     vec3 wind = CLOUD_REALISTIC_OCTAVE_SCALE * frameTimeCounter * CLOUD_SPEED * vec3(10.0, -10.0, 5.0);
     vec4 result = vec4(0.0);
-    result.w = realisticCloudDensity(cloudPos, wind, cloudDistance2 * cloudDistance, cloudRealisticOctaves, cloudDensityWeights);
+    result.w = realisticCloudDensity(cloudPos, wind, cloudDistance2 * cloudDistance, CLOUD_REALISTIC_OCTAVES, cloudDensityWeights);
     if (result.w > 1e-5) {
         float RdotP = 2.0 * dot(sunDir, relativeCloudPos);
         float sunlightOpticalDepth = 0.0;
         float moonlightOpticalDepth = 0.0;
-        float stepSize = CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE * 0.5 + CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE * noise;
+        float stepSize = CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE;
         float stepLength = 0.0;
-        for (int i = 0; i < cloudRealisticShadowLightSamples; i++) {
+        for (int i = 0; i < CLOUD_REALISTIC_SHADOWLIGHT_SAMPLES; i++) {
             stepLength += stepSize;
             vec3 sunlightSamplePos = cloudPos + sunDir * stepLength;
             sunlightOpticalDepth += realisticCloudDensity(
                 sunlightSamplePos, wind, sqrt(cloudDistance2 + stepLength * (RdotP + stepLength)),
-                cloudRealisticShadowLightOctaves, cloudShadowDensityWeights
+                CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES, cloudShadowDensityWeights
             ) * stepSize;
             vec3 moonlightSamplePos = cloudPos - sunDir * stepLength;
             moonlightOpticalDepth += realisticCloudDensity(
                 moonlightSamplePos, wind, sqrt(cloudDistance2 + stepLength * (-RdotP + stepLength)),
-                cloudRealisticShadowLightOctaves, cloudShadowDensityWeights
+                CLOUD_REALISTIC_SHADOWLIGHT_OCTAVES, cloudShadowDensityWeights
             ) * stepSize;
             stepSize += CLOUD_REALISTIC_SHADOW_LIGHT_STEP_SIZE;
         }
         RdotP *= cloudDistance * 0.5;
+        vec2 c = inversesqrt(cloudDistance) * inversesqrt(scaledHeight);
         cloudDistance = cloudDistance2 * cloudDistance;
+        vec2 cExpH = c * exp2(earthScaledHeight - cloudDistance / scaledHeight * 1.44269502);
         vec3 sunlightStrength, moonlightStrength;
-        atmosphereAbsorptionDoubleSideLUT(cloudDistance, RdotP, sunlightStrength, moonlightStrength);
-        moonlightStrength *= vec3(1.0) + (MOONLIGHT_TINT - vec3(1.0)) * nightFactor;
+        sampleInScatteringDoubleSide(cloudDistance * 1.44269502, c, cExpH, RdotP, sunlightStrength, moonlightStrength);
         RdotP *= abs(RdotP);
-        sunlightStrength *= atmosphereAbsorptionGround(RdotP, cloudDistance);
-        moonlightStrength *= atmosphereAbsorptionGround(-RdotP, cloudDistance);
+        sunlightStrength *= atmosphereAbsorption(RdotP, cloudDistance);
+        moonlightStrength *= atmosphereAbsorption(-RdotP, cloudDistance);
 
         sunlightStrength *= CLOUD_REALISTIC_BASIC_SHADOWLIGHT + exp2(-sqrt(sunlightOpticalDepth * CLOUD_REALISTIC_SAMPLE_DENSITY * 1.44269502 * 1.44269502));
         moonlightStrength *= CLOUD_REALISTIC_BASIC_SHADOWLIGHT + exp2(-sqrt(moonlightOpticalDepth * CLOUD_REALISTIC_SAMPLE_DENSITY * 1.44269502 * 1.44269502));
-        result.rgb += CLOUD_SUNLIGHT_STRENGTH * SUNLIGHT_BRIGHTNESS * (sunlightStrength * sunPhase + moonlightStrength * moonPhase * nightBrightness);
+        result.rgb += 10.0 * SUNLIGHT_BRIGHTNESS * (sunlightStrength + moonlightStrength * nightBrightness);
 
         float cloudHeight = -clamp(1.0 + (earthRadius + CLOUD_REALISTIC_HEIGHT + 500.0) / CLOUD_REALISTIC_CENTER_THICKNESS - cloudDistance / CLOUD_REALISTIC_CENTER_THICKNESS, 0.0, 1.0) +
             clamp(
@@ -251,11 +245,9 @@ vec4 realisticCloud(
 ) {
     vec3 cloudPos = worldPos;
     cloudPos.y += max(300.0 + earthRadius, cameraPosition.y + WORLD_BASIC_HEIGHT + earthRadius);
-    intersectionData.x = dot(cloudPos, worldDir);
-    intersectionData.y = intersectionData.x * intersectionData.x - dot(cloudPos, cloudPos);
     float planetIntersection = intersectionData.z;
-    vec2 cloudBottomIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, pow2(cloudBottomHeight));
-    vec2 cloudTopIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, pow2(cloudTopHeight));
+    vec2 cloudBottomIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, -pow2(cloudBottomHeight));
+    vec2 cloudTopIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, -pow2(cloudTopHeight));
 
     float startIntersection, endIntersection;
     bool hit = true;
@@ -265,9 +257,10 @@ vec4 realisticCloud(
         endIntersection = cloudTopIntersection.y;
     }
     else {
-        hit = cloudTopIntersection.y > 0.0;
-        startIntersection = max(0.0, cloudTopIntersection.x);
-        endIntersection = uintBitsToFloat(min(floatBitsToUint(cloudTopIntersection.y), floatBitsToUint(cloudBottomIntersection.x)));
+        endIntersection = mix(cloudTopIntersection.y, cloudBottomIntersection.x, float(cloudBottomIntersection.x > 0.0));
+        float overCloud = clamp((cloudPos.y - cloudTopHeight) * 1e+10, 0.0, 1.0);
+        startIntersection = cloudTopIntersection.x * overCloud;
+        hit = cloudPos.y < cloudTopHeight || cloudTopIntersection.y > 0.0;
     }
 
     if (backDepth > 1e-5) {
@@ -278,36 +271,46 @@ vec4 realisticCloud(
 
     vec4 result = vec4(baseColor, 0.0);
     cloudDepth = -1.0;
-    if (hit) {
-        float sunCosAngle = clamp(dot(worldDir, sunDir), -1.0, 1.0);
-        float sunPhase = mix(1.0, cloudMiePhase(sunCosAngle, CLOUD_REALISTIC_MIE_G) / cloudMiePhase(0.0, CLOUD_REALISTIC_MIE_G), CLOUD_REALISTIC_MIE_STRENGTH);
-        float moonPhase = mix(1.0, cloudMiePhase(-sunCosAngle, CLOUD_REALISTIC_MIE_G) / cloudMiePhase(0.0, CLOUD_REALISTIC_MIE_G), CLOUD_REALISTIC_MIE_STRENGTH);
-
+    if (hit && endIntersection > startIntersection) {
         float cloudTransmittance = 1.0;
-        float stepSize = (endIntersection - startIntersection) / (cloudRealisticHqSamples + 1.0);
-        float startNoise = stepSize * bayer64Temporal(gl_FragCoord.xy);
-        float stepTransmittance = -stepSize * CLOUD_REALISTIC_SAMPLE_DENSITY * 1.44269502;
-        cloudPos += worldDir * (startIntersection + startNoise);
+        #ifdef LQ_REALISTIC_CLOUD
+            const int cloudSamples = CLOUD_REALISTIC_LQ_SAMPLES;
+            float sampleOffset = 0.5;
+        #else
+            const int cloudSamples = CLOUD_REALISTIC_HQ_SAMPLES;
+            float sampleOffset = volumetricSampleOffset(gl_FragCoord.xy);
+        #endif
+        float segmentLength = endIntersection - startIntersection;
         cloudPos.xz += cameraPosition.xz + vec2(CLOUD_REALISTIC_OFFSET_X, CLOUD_REALISTIC_OFFSET_Z);
-        worldDir *= stepSize;
 
-        float unHitted = 1.0;
         vec3 cloudColor = vec3(0.0);
-        cloudDepth = startIntersection + startNoise;
-        NoiseGenerator noiseGenerator = initNoiseGenerator(uvec2(gl_FragCoord.st), uint(frameCounter));
-        for (int i = 0; i < cloudRealisticHqSamples; i++) {
-            vec4 sampleCloud = sampleRealisticCloud(cloudPos, sunDir, (skyColorUp + atmosphere) * vec3(0.5) / PI, nextFloat(noiseGenerator), sunPhase, moonPhase);
-            float sampleTransmittance = exp2(sampleCloud.w * stepTransmittance) * cloudTransmittance;
-            cloudColor += (cloudTransmittance - sampleTransmittance) * sampleCloud.rgb;
+        float cloudDepthSum = 0.0;
+        for (int i = 0; i < cloudSamples; i++) {
+            float intervalStart = float(i) / float(cloudSamples);
+            float intervalEnd = float(i + 1) / float(cloudSamples);
+            #ifndef LQ_REALISTIC_CLOUD
+                // Resolve the visible cloud surface before spending samples on
+                // the distant interior. Uniform kilometre-sized steps flatten
+                // small density features into broad, evenly shaded patches.
+                intervalStart *= intervalStart;
+                intervalEnd *= intervalEnd;
+            #endif
+            float stepSize = (intervalEnd - intervalStart) * segmentLength;
+            float sampleDepth = startIntersection + mix(intervalStart, intervalEnd, sampleOffset) * segmentLength;
+            vec3 samplePos = cloudPos + worldDir * sampleDepth;
+            vec4 sampleCloud = sampleRealisticCloud(samplePos, sunDir, (skyColorUp + atmosphere) * vec3(0.5) / PI);
+            float sampleTransmittance = exp2(-sampleCloud.w * stepSize * CLOUD_REALISTIC_SAMPLE_DENSITY * 1.44269502) * cloudTransmittance;
+            float sampleWeight = cloudTransmittance - sampleTransmittance;
+            cloudColor += sampleWeight * sampleCloud.rgb;
+            cloudDepthSum += sampleDepth * sampleWeight;
             cloudTransmittance = sampleTransmittance;
             if (cloudTransmittance < 0.0001) break;
-            unHitted *= float(sampleTransmittance > 0.99999);
-            cloudDepth += stepSize * unHitted;
-            cloudPos += worldDir;
-            cloudTransmittance = clamp(cloudTransmittance * 1.005 - 0.005, 0.0, 1.0);
         }
         if (cloudTransmittance < 0.9999) {
             float cloudDensity = 1.0 - cloudTransmittance;
+            // The SR motion guide follows the visible contribution rather than
+            // jumping between the first nonempty ray-march samples.
+            cloudDepth = cloudDepthSum / cloudDensity;
             float cloudFalloff = exp(-startIntersection / CLOUD_REALISTIC_FADE_DISTANCE);
             cloudColor = cloudColor * cloudFalloff + (1.0 - cloudDensity * cloudFalloff) * atmosphere;
             cloudColor = mix(baseColor, cloudColor, cloudDensity * clamp(cloudFalloff * 2.7, 0.0, 1.0));
@@ -413,11 +416,12 @@ float cloudShadowRealistic(vec3 worldPos, vec3 shadowDir) {
     float RdotP = dot(worldPos, shadowDir);
     float RdotP2 = RdotP * RdotP - R2;
 
-    float d = sqrt(RdotP2 + pow2(cloudCenterHeight));
-    float startIntersection = max(-1.0, -RdotP + signMul(d, cloudCenterHeight - worldPos.y));
+    vec2 cloudIntersection = raySphereIntersection(RdotP, RdotP2, -pow2(cloudCenterHeight));
+    float startIntersection = mix(cloudIntersection.x, cloudIntersection.y, float(worldPos.y < cloudCenterHeight));
+    bool hit = cloudIntersection.y >= 0.0 || worldPos.y < cloudCenterHeight;
 
     float cloudTransmittance = 1.0;
-    if (startIntersection > 0.0) {
+    if (hit) {
         vec3 wind = CLOUD_REALISTIC_OCTAVE_SCALE * frameTimeCounter * CLOUD_SPEED * vec3(10.0, -10.0, 5.0) * 0.000015 / CLOUD_SCALE * 64.0;
 
         vec3 cloudPos = worldPos + vec3(cameraPosition.x + CLOUD_REALISTIC_OFFSET_X, 0.0, cameraPosition.z + CLOUD_REALISTIC_OFFSET_Z) + shadowDir * startIntersection;
@@ -459,11 +463,10 @@ const float planeCloudHeight = PLANE_CLOUD_HEIGHT + earthRadius + 500.0;
 vec4 planeClouds(vec3 worldPos, vec3 worldDir, vec3 sunDirection, vec3 skyColorUp, vec3 intersectionData) {
     worldPos.y += max(300.0 + earthRadius, cameraPosition.y + WORLD_BASIC_HEIGHT + earthRadius);
 
-    intersectionData.x = dot(worldPos, worldDir);
-    intersectionData.y = intersectionData.x * intersectionData.x - dot(worldPos, worldPos);
     float planetIntersection = intersectionData.z;
-    float d = sqrt(intersectionData.y + pow2(planeCloudHeight));
-    float intersection = max(-1.0, -intersectionData.x + signMul(d, planeCloudHeight - worldPos.y));
+    vec2 cloudIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, -pow2(planeCloudHeight));
+
+    float intersection = mix(cloudIntersection.y, cloudIntersection.x, float(worldPos.y > planeCloudHeight));
     bool hit = intersection > 0.0 && (worldPos.y > planeCloudHeight || planetIntersection < 0.0);
 
     vec4 result = vec4(0.0);
@@ -491,19 +494,14 @@ vec4 planeClouds(vec3 worldPos, vec3 worldDir, vec3 sunDirection, vec3 skyColorU
             float cloudHeight2 = dot(relativeCloudPos, relativeCloudPos);
             float cloudHeightInv = inversesqrt(cloudHeight2);
             float LdotP = dot(sunDirection, relativeCloudPos) * cloudHeightInv;
-            float cloudHeight = cloudHeight2 * cloudHeightInv;
+            float cloudHeight = cloudHeight2 * cloudHeightInv * 1.44269502;
+            vec2 c = inversesqrt(cloudHeightInv) * inversesqrt(scaledHeight);
+            vec2 currRelativeDensity = exp2(earthScaledHeight - cloudHeight / scaledHeight);
+            vec2 cExpH = c * currRelativeDensity;
             vec3 sunlightStrength, moonlightStrength;
-            atmosphereAbsorptionDoubleSideLUT(cloudHeight, LdotP, sunlightStrength, moonlightStrength);
-            moonlightStrength *= vec3(1.0) + (MOONLIGHT_TINT - vec3(1.0)) * nightFactor;
-            LdotP *= abs(LdotP);
-            sunlightStrength *= atmosphereAbsorptionGround(LdotP, cloudHeight);
-            moonlightStrength *= atmosphereAbsorptionGround(-LdotP, cloudHeight);
+            sampleInScatteringDoubleSide(cloudHeight, c, cExpH, LdotP, sunlightStrength, moonlightStrength);
 
-            float sunCosAngle = clamp(dot(worldDir, sunDirection), -1.0, 1.0);
-            float sunPhase = mix(1.0, cloudMiePhase(sunCosAngle, CLOUD_REALISTIC_MIE_G) / cloudMiePhase(0.0, CLOUD_REALISTIC_MIE_G), CLOUD_REALISTIC_MIE_STRENGTH);
-            float moonPhase = mix(1.0, cloudMiePhase(-sunCosAngle, CLOUD_REALISTIC_MIE_G) / cloudMiePhase(0.0, CLOUD_REALISTIC_MIE_G), CLOUD_REALISTIC_MIE_STRENGTH);
-
-            vec3 cloudColor = CLOUD_SUNLIGHT_STRENGTH * (sunlightStrength * sunPhase + moonlightStrength * moonPhase * nightBrightness) * SUNLIGHT_BRIGHTNESS;
+            vec3 cloudColor = 10.0 * (sunlightStrength + moonlightStrength * nightBrightness) * SUNLIGHT_BRIGHTNESS;
             result = vec4(cloudColor, cloudDensity * cloudDensity);
         }
     }

@@ -13,7 +13,7 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Bloom stage 1: generate mips; Motion blur stage 1: blur scaled with velocity; Average exposure and smooth center depth
+//  Bloom stage 1: generated mips; Motion blur stage 1: blur scaled with velocity; Average exposure and smooth center depth
 //
 
 layout(location = 0) out vec4 texBuffer3;
@@ -21,6 +21,8 @@ layout(location = 1) out vec4 texBuffer4;
 layout(location = 2) out vec4 texBuffer7;
 
 in vec2 texcoord;
+in float prevExposure;
+in float smoothCenterDepth;
 
 #define MOTION_BLUR_STRENGTH 1.0 // [0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0 2.2 2.4 2.6 2.8 3.0 3.2 3.4 3.6 3.8 4.0 4.2 4.4 4.6 4.8 5.0 5.5 6.0 6.5 7.0 7.5 8.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 17.0 18.0 19.0 20.0]
 #define MOTION_BLUR_QUALITY 5 // [2 3 4 5 6 7 8 9 10]
@@ -30,6 +32,7 @@ in vec2 texcoord;
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
+#include "/libs/GbufferData.glsl"
 
 const bool colortex3MipmapEnabled = true;
 
@@ -46,41 +49,35 @@ vec3 calculateBloomBase(vec2 coord) {
         vec2 lodSizeFloor = floor(lodSize);
         centerCoord = (centerCoord - 1.0) * lodSizeFloor / (lodSizeFloor + 0.5 * clamp(1.0 - (lodSize - lodSizeFloor) * 1e+5, 0.0, 1.0)) + 1.0;
 
-        vec3 bloomColor = textureLod(colortex3, centerCoord, lod).rgb * 4.0;
-        bloomColor += textureLod(colortex3, centerCoord + vec2(-1.0, 1.0) * bloomTexel, lod).rgb;
-        bloomColor += textureLod(colortex3, centerCoord + vec2(-1.0,-1.0) * bloomTexel, lod).rgb;
-        bloomColor += textureLod(colortex3, centerCoord + vec2( 1.0, 1.0) * bloomTexel, lod).rgb;
-        bloomColor += textureLod(colortex3, centerCoord + vec2( 1.0,-1.0) * bloomTexel, lod).rgb;
+        vec3 bloomColor = srTextureLodScene(colortex3, centerCoord, lod).rgb * 4.0;
+        bloomColor += srTextureLodScene(colortex3, centerCoord + vec2(-1.0, 1.0) * bloomTexel, lod).rgb;
+        bloomColor += srTextureLodScene(colortex3, centerCoord + vec2(-1.0,-1.0) * bloomTexel, lod).rgb;
+        bloomColor += srTextureLodScene(colortex3, centerCoord + vec2( 1.0, 1.0) * bloomTexel, lod).rgb;
+        bloomColor += srTextureLodScene(colortex3, centerCoord + vec2( 1.0,-1.0) * bloomTexel, lod).rgb;
         result = bloomColor * 0.125;
     }
     return result;
 }
 
 float getAvgBrightness() {
-    const int sampleCount = 8;
-    const float sampleStart = 0.5 / float(sampleCount + 1);
-    float sampleMipLevel = ceil(log2(max(screenSize.x, screenSize.y) / float(sampleCount)));
-    float sampleCoordX = sampleStart;
-
-    float totalBrightness = 0.0;
+    const float mipmapLevel = 6.0;
+    const float texelScale = exp2(mipmapLevel);
+    vec3 totalColor = vec3(0.0);
     float totalWeight = 0.0;
-    for (int i = 0; i < sampleCount; i++) {
-        float sampleCoordY = sampleStart;
-        for (int j = 0; j < sampleCount; j++) {
-            vec2 sampleCoord = vec2(sampleCoordX, sampleCoordY);
-            vec2 centerOffset = sampleCoord - 0.5;
-            float sampleWeight = exp2(-max(centerOffset.x * centerOffset.x, centerOffset.y * centerOffset.y) * exp2(AVERAGE_EXPOSURE_CENTER_WEIGHT * 2.0));
-            totalBrightness += pow(dot(textureLod(colortex3, sampleCoord, sampleMipLevel).rgb, vec3(1.0 / 3.0)) * 0.01, 1.0 / AVERAGE_EXPOSURE_TENDENCY) * sampleWeight;
+    vec2 avgExposureTexel = texelSize * texelScale;
+    ivec2 avgExposureSteps = ivec2(screenSize / texelScale);
+    for (int i = 0; i < avgExposureSteps.x; i++) {
+        for (int j = 0; j < avgExposureSteps.y; j++) {
+            float sampleWeight = exp2(-length((vec2(i, j) - avgExposureSteps * 0.5) * avgExposureTexel) * exp2(AVERAGE_EXPOSURE_CENTER_WEIGHT));
+            totalColor += pow(srTexelFetchScene(colortex3, ivec2(i, j), int(mipmapLevel)).rgb * 0.01, vec3(1.0 / AVERAGE_EXPOSURE_TENDENCY)) * sampleWeight;
             totalWeight += sampleWeight;
-            sampleCoordY += 1.0 / float(sampleCount + 1.0);
         }
-        sampleCoordX += 1.0 / float(sampleCount + 1.0);
     }
-    totalBrightness = pow(totalBrightness / totalWeight, AVERAGE_EXPOSURE_TENDENCY);
-    float currBrightness = totalBrightness * 600.0;
+    totalColor = pow(totalColor / totalWeight, vec3(AVERAGE_EXPOSURE_TENDENCY));
+    float currBrightness = dot(totalColor, vec3(600.0 / 3.0));
 
-    float prevExposure = uintBitsToFloat(texelFetch(colortex6, ivec2(0), 0).x);
     float averageBrightness = mix(prevExposure, currBrightness, clamp(frameTime * (step(currBrightness, prevExposure) * 2.0 + 2.0) + float(prevExposure == 0.0), 0.0, 1.0));
+
     return averageBrightness;
 }
 
@@ -94,35 +91,40 @@ vec3 motionBlur(vec2 currCoord, vec2 velocity) {
     float totalWeight = 0.0;
 
     for (int i = 0; i < MOTION_BLUR_QUALITY; i++) {
-        totalColor += textureLod(colortex3, sampleCoord, 0.0).rgb;
+        totalColor += srTextureLodScene(colortex3, sampleCoord, 0.0).rgb;
         sampleCoord += stepSize;
     }
     return totalColor / MOTION_BLUR_QUALITY;
 }
 
 void main() {
-    ivec2 texel = ivec2(gl_FragCoord.st);
-    vec3 currColor = texelFetch(colortex3, texel, 0).rgb;
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
+    vec3 currColor = srTextureLodScene(colortex3, texcoord, 0.0).rgb;
 
     texBuffer4 = vec4(calculateBloomBase(texcoord) * 6.0, 1.0);
     texBuffer3 = vec4(currColor, 1.0);
     #ifdef MOTION_BLUR
-        ivec2 velocityTexel = texel;
-        #if SR_ENABLE
-            velocityTexel = ivec2(gl_FragCoord.st * renderScale);
-        #endif
-        vec2 velocity = texelFetch(colortex5, velocityTexel, 0).xy;
-        #if SR_ENABLE
-            velocity *= renderScale;
-        #endif
-        vec3 motionBlurColor = motionBlur(texcoord, velocity);
-        texBuffer3.rgb = mix(currColor, motionBlurColor, vec3(clamp(length(velocity * screenSize) * 0.3, 0.0, 1.0)));
+        vec2 velocity = srTextureLodScene(colortex5, texcoord, 0.0).xy;
+        float motionBlurWeight = clamp(length(velocity * screenSize) * 0.3, 0.0, 1.0);
+        if (motionBlurWeight > 0.0) {
+            vec3 motionBlurColor = motionBlur(texcoord, velocity);
+            texBuffer3.rgb = mix(currColor, motionBlurColor, vec3(motionBlurWeight));
+        }
     #endif
     texBuffer3.rgb *= 6.0;
 
-    texBuffer7 = vec4(pow(currColor * 0.01, vec3(1.0 / 2.2)) * 10.0, uintBitsToFloat(texelFetch(colortex6, texel, 0).x));
+    texBuffer7 = vec4(
+        pow(currColor * 0.01, vec3(1.0 / 2.2)) * 10.0,
+        srTextureLodLow(depthtex0, texcoord, 0.0).r
+    );
+    #ifdef LOD
+        texBuffer7.w += getLodDepthWater(texcoord) * float(texBuffer7.w == 1.0);
+    #endif
     if (dot(texcoord, screenSize) < 1.1) {
         texBuffer7.w = getAvgBrightness();
+    }
+    if (dot(1.0 - texcoord, screenSize) < 1.1) {
+        texBuffer7.w = smoothCenterDepth;
     }
 }
 

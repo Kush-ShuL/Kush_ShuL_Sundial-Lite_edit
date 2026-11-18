@@ -13,7 +13,7 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Gbuffer for Distant Horizons translucent terrain
+//  Gbuffer for Distant Horizons transparent terrain
 //
 
 #extension GL_ARB_gpu_shader5 : enable
@@ -36,21 +36,15 @@ flat in float materialID;
 #include "/libs/Parallax.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     vec3 worldPos = viewToWorldPos(viewPos);
-    if (max(dot(worldPos.xz, worldPos.xz), worldPos.y * worldPos.y) < (far - 16.0) * (far - 16.0) || texture2D(depthtex0, gl_FragCoord.st * texelSize).r < 1.0) {
+    if (max(dot(worldPos.xz, worldPos.xz), worldPos.y * worldPos.y) < (far - 16.0) * (far - 16.0) || srTexture2DLow(depthtex0, gl_FragCoord.st * texelSize).r < 1.0) {
         discard;
     }
 
     GbufferData rawData;
 
     rawData.albedo = color;
-    #ifdef DISTANT_HORIZONS_TEXTURES
-        if (dh_hasTexture()) {
-            rawData.albedo = dh_sampleTexture();
-            vec3 clampedColor = clamp(color.rgb * (rawData.albedo.rgb * 2.0), 0.0, 1.0);
-            rawData.albedo.rgb = mix(color.rgb, clampedColor, rawData.albedo.a);
-        }
-    #endif
     rawData.lightmap = blockLight;
     rawData.geoNormal = tbnMatrix[2];
     rawData.smoothness = clamp(1.0 + materialID, 0.0, 1.0);
@@ -88,7 +82,6 @@ void main() {
     #endif
     #if WATER_TYPE == 0
         if (materialID == MAT_WATER) {
-            rawData.albedo = color;
             vec3 tangentDir = transpose(tbnMatrix) * viewPos.xyz;
             normal = waterWave(mcPos / 32.0, tangentDir);
             normal.xy += rippleNormal.xy * wetStrength;
@@ -106,7 +99,7 @@ void main() {
     weight = max(NdotV, curveStart) - weight;
     normal = viewDir * weight + edgeNormal * max(0.0, inversesqrt(dot(edgeNormal, edgeNormal) / (1.0 - weight * weight)));
     float fadeFactor = viewDepthInv * curveStart * gbufferProjection[1].y * screenSize.y;
-    normal = mix(tbnMatrix[2], normal, fadeFactor / (fadeFactor + 0.2));
+    normal = mix(tbnMatrix[2], normal, fadeFactor / (fadeFactor + 0.3));
     rawData.normal = normal;
 
     packUpGbufferDataSolid(rawData, gbufferData0, gbufferData1, gbufferData2);

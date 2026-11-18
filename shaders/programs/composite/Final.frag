@@ -65,10 +65,10 @@ vec3 FidelityFX_RCAS(sampler2D colortex, vec2 coord, vec3 colorE, vec2 pixelSize
     //  d e f
     //    h
     // Input and output might not be same size in Optifine, so we should use textureLod()
-    vec3 colorB = textureLod(colortex, coord + vec2( 0.0, -1.0) * pixelSize, 0.0).rgb;
-    vec3 colorD = textureLod(colortex, coord + vec2(-1.0,  0.0) * pixelSize, 0.0).rgb;
-    vec3 colorF = textureLod(colortex, coord + vec2( 1.0,  0.0) * pixelSize, 0.0).rgb;
-    vec3 colorH = textureLod(colortex, coord + vec2( 0.0,  1.0) * pixelSize, 0.0).rgb;
+	vec3 colorB = textureLod(colortex, coord + vec2( 0.0, -1.0) * pixelSize, 0.0).rgb;
+	vec3 colorD = textureLod(colortex, coord + vec2(-1.0,  0.0) * pixelSize, 0.0).rgb;
+	vec3 colorF = textureLod(colortex, coord + vec2( 1.0,  0.0) * pixelSize, 0.0).rgb;
+	vec3 colorH = textureLod(colortex, coord + vec2( 0.0,  1.0) * pixelSize, 0.0).rgb;
     // Luma times 2.
     float lumaB = luma2(colorB);
     float lumaD = luma2(colorD);
@@ -78,7 +78,7 @@ vec3 FidelityFX_RCAS(sampler2D colortex, vec2 coord, vec3 colorE, vec2 pixelSize
     // Noise detection.
     float nz = 0.25 * lumaB + 0.25 * lumaD + 0.25 * lumaF + 0.25 * lumaH - lumaE;
     float minLuma = min(min3(lumaB, lumaD, lumaF), lumaH);
-    nz = clamp(abs(nz) / (max3(max3(lumaB, lumaD, lumaE), lumaF, lumaH) - min(minLuma, lumaE)), 0.0, 1.0);
+    nz = clamp(abs(nz) / max(max3(max3(lumaB, lumaD, lumaE), lumaF, lumaH) - min(minLuma, lumaE), 1e-6), 0.0, 1.0);
     nz = float(-0.5) * nz + float(1.0);
     // Min and max of ring.
     float min4R = min(min3(colorB.r, colorD.r, colorF.r), colorH.r);
@@ -90,13 +90,13 @@ vec3 FidelityFX_RCAS(sampler2D colortex, vec2 coord, vec3 colorE, vec2 pixelSize
     // Immediate constants for peak range.
     vec2 peakC = vec2(1.0, -1.0 * 4.0);
     // Limiters, these need to be high precision RCPs.
-    float lowerLimiterMultiplier = clamp(lumaE / minLuma, 0.0, 1.0);
-    float hitMinR = min4R / (float(4.0) * max4R) * lowerLimiterMultiplier;
-    float hitMinG = min4G / (float(4.0) * max4G) * lowerLimiterMultiplier;
-    float hitMinB = min4B / (float(4.0) * max4B) * lowerLimiterMultiplier;
-    float hitMaxR = (peakC.x - max4R) / (float(4.0) * min4R + peakC.y);
-    float hitMaxG = (peakC.x - max4G) / (float(4.0) * min4G + peakC.y);
-    float hitMaxB = (peakC.x - max4B) / (float(4.0) * min4B + peakC.y);
+    float lowerLimiterMultiplier = clamp(lumaE / max(minLuma, 1e-6), 0.0, 1.0);
+    float hitMinR = min4R / max(float(4.0) * max4R, 1e-6) * lowerLimiterMultiplier;
+    float hitMinG = min4G / max(float(4.0) * max4G, 1e-6) * lowerLimiterMultiplier;
+    float hitMinB = min4B / max(float(4.0) * max4B, 1e-6) * lowerLimiterMultiplier;
+    float hitMaxR = (peakC.x - max4R) / min(float(4.0) * min4R + peakC.y, -1e-6);
+    float hitMaxG = (peakC.x - max4G) / min(float(4.0) * min4G + peakC.y, -1e-6);
+    float hitMaxB = (peakC.x - max4B) / min(float(4.0) * min4B + peakC.y, -1e-6);
     float lobeR   = max(-hitMinR, hitMaxR);
     float lobeG   = max(-hitMinG, hitMaxG);
     float lobeB   = max(-hitMinB, hitMaxB);
@@ -110,7 +110,7 @@ vec3 FidelityFX_RCAS(sampler2D colortex, vec2 coord, vec3 colorE, vec2 pixelSize
 
 void main() {
     vec3 color = textureLod(colortex0, texcoord, 0.0).rgb;
-    #ifdef FINAL_SHARPENING
+    #if defined FINAL_SHARPENING && !defined HELIAN_SR_ACTIVE
         vec2 pixelSize = 1.0 / vec2(textureSize(colortex0, 0));
         color = FidelityFX_RCAS(colortex0, texcoord, color, pixelSize);
     #endif

@@ -28,6 +28,7 @@ flat out vec3 blockData;
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
+#include "/libs/Materials.glsl"
 
 void main() {
     viewPos = (gl_ModelViewMatrix * gl_Vertex).xyz;
@@ -36,7 +37,7 @@ void main() {
     color = gl_Color.rgb;
     blockData.xy = (gl_TextureMatrix[1] * gl_MultiTexCoord1).st * 16.0 / 15.0 - 0.5 / 15.0;
 
-    blockData.z = 0.0;
+    blockData.z = MAT_DEFAULT;
     if (dhMaterialId == DH_BLOCK_LEAVES) {
         blockData.z = 1.0;
     }
@@ -47,11 +48,8 @@ void main() {
         blockData.z = 3.0;
     }
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

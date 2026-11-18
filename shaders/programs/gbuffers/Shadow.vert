@@ -16,6 +16,14 @@
 //  Shadow
 //
 
+#ifdef RT_TERRAIN_GEOMETRY
+    #define color terrainColor
+    #define worldNormal terrainNormal
+    #define texcoord terrainUV
+    #define shadowOffset terrainOffset
+    #define distortFixValue terrainDistortion
+#endif
+
 #if MC_VERSION >= 11700
 in vec4 mc_Entity;
 in vec2 mc_midTexCoord;
@@ -25,10 +33,6 @@ layout(location = 12) in vec4 mc_midTexCoord;
 #else
 layout(location = 10) in vec4 mc_Entity;
 layout(location = 11) in vec4 mc_midTexCoord;
-#endif
-
-#ifdef PHYSICS_OCEAN_V2
-    in float physics_waviness;
 #endif
 
 out vec4 color;
@@ -45,25 +49,54 @@ out float distortFixValue;
 const int shadowMapResolution = 2048; // [1024 2048 4096 8192 16384]
 const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
 
+#if defined RT_TERRAIN_GEOMETRY && defined HELIAN_RT_SCENE
+    #ifndef RT_ENTITY_GEOMETRY
+        in vec4 at_midBlock;
+    #else
+        out float rtVertexAlpha;
+    #endif
+    out vec3 rtPosition;
+    out vec2 rtUV;
+    out vec3 rtTint;
+    out vec3 rtLight;
+#endif
+
+#ifdef RT_ENTITY_GEOMETRY
+    uniform int entityId;
+    flat out int rtModelId;
+#endif
+
 void main() {
-    #if defined SHADOW_AND_SKY || defined END_FLASH
+    #ifdef RT_ENTITY_GEOMETRY
+        rtModelId = entityId;
+    #endif
+    #if defined RT_TERRAIN_GEOMETRY && defined HELIAN_RT_SCENE
+        rtPosition = (shadowModelViewInverse * (gl_ModelViewMatrix * gl_Vertex)).xyz;
+        rtUV = gl_MultiTexCoord0.st;
+        rtTint = gl_Color.rgb;
+        rtLight = vec3(clamp((gl_MultiTexCoord1.xy - 8.0) / 232.0, 0.0, 1.0), 0.0);
+        #ifdef RT_ENTITY_GEOMETRY
+            rtUV = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
+            rtVertexAlpha = gl_Color.a;
+        #else
+            rtLight.z = at_midBlock.w;
+            #ifndef IRIS_FEATURE_BLOCK_EMISSION_ATTRIBUTE
+                int kind = int(mc_Entity.x);
+                if (kind >= 0 && ((kind & 0x7000) == 0x5000 || (kind & 0x7000) == 0x6000))
+                    rtLight.z = max(rtLight.z, 12.0);
+            #endif
+            #ifdef RT_TRANSLUCENT_GEOMETRY
+                if (mc_Entity.x == 8192) rtLight.z = -1.0;
+            #endif
+        #endif
+    #endif
+    #ifdef SHADOW_AND_SKY
         color = gl_Color;
         worldNormal = normalize(mat3(shadowModelViewInverse) * gl_NormalMatrix * gl_Normal);
         texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).st;
-        #ifdef PHYSICS_OCEAN_V3
-            vec4 vertexPos = vec4(physics_oceanVertex(gl_Vertex.xyz), 1.0);
-            vec4 viewPos = gl_ModelViewMatrix * vertexPos;
-        #elif defined PHYSICS_OCEAN
-            #ifdef PHYSICS_OCEAN_V2
-                // transform gl_Vertex (since it is the raw mesh, i.e. not transformed yet)
-                float baseWaveHeight = physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_waviness, physics_gameTime);
-                float rippleHeight = physics_rippleVertexHeight(gl_Vertex.xz);
-                // pass this to the fragment shader to fetch the texture there for per fragment normals
-                vec3 physics_localPosition = vec3(gl_Vertex.x, gl_Vertex.y + baseWaveHeight + rippleHeight, gl_Vertex.z);
-            #else
-                float physics_localWaviness = texelFetch(physics_waviness, ivec2(gl_Vertex.xz) - physics_textureOffset, 0).r;
-                vec3 physics_localPosition = gl_Vertex.xyz + vec3(0.0, physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_localWaviness, physics_gameTime), 0.0);
-            #endif
+        #if defined PHYSICS_OCEAN && !defined RT_ENTITY_GEOMETRY
+            float physics_localWaviness = texelFetch(physics_waviness, ivec2(gl_Vertex.xz) - physics_textureOffset, 0).r;
+            vec3 physics_localPosition = gl_Vertex.xyz + vec3(0.0, physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_localWaviness, physics_gameTime), 0.0);
 
             vec4 viewPos = gl_ModelViewMatrix * vec4(physics_localPosition, 1.0);
         #else
@@ -72,7 +105,7 @@ void main() {
         vec3 worldPos = mat3(shadowModelViewInverse) * viewPos.xyz + shadowModelViewInverse[3].xyz;
         distortFixValue = dot(worldPos, worldNormal);
 
-        #ifdef PLANT_WAVE
+        #if defined PLANT_WAVE && !defined RT_ENTITY_GEOMETRY
             int material = int(mc_Entity.x);
             if (material == 8198) {
                 material = 16896;
@@ -85,9 +118,6 @@ void main() {
                 if (abs(max(abs(gl_Normal.x), abs(gl_Normal.z)) - 0.5) < 0.4) {
                     material = 18944 + 1024 * int(mc_midTexCoord.t < gl_MultiTexCoord0.t);
                 }
-            }
-            if (material == 8210) {
-                material = 18944;
             }
 
             vec3 mcPos = worldPos + cameraPosition;
@@ -103,28 +133,31 @@ void main() {
                     worldPos.xz -= (waveNoise.x * vec2(0.1, 0.05) + waveNoise.y * vec2(0.02, 0.02)) * height;
                 }
                 else if ((commonWave & 0x0600) == 0x0200) {
-                    vec3 waveOffset = waveNoise.x * vec3(0.1 , 0.04, 0.07) + waveNoise.y * vec3(0.02, 0.01, 0.02);
-                    waveOffset *= clamp(1.0 - abs(gl_Normal) * float(mc_Entity.x == 8210), 0.0, 1.0);
-                    worldPos -= waveOffset;
+                    worldPos -= waveNoise.x * vec3(0.1 , 0.04, 0.07) + waveNoise.y * vec3(0.02, 0.01, 0.02);
                 }
             }
             viewPos.xyz = mat3(shadowModelView) * worldPos + shadowModelView[3].xyz;
         #endif
 
         shadowOffset = vec2(0.0, 0.0);
-        bool isWater = mc_Entity.x == 8192 || (mc_Entity.x == 8194 && gl_Color.b - gl_Color.r > 0.1);
-        if (isWater) {
+        #if defined RT_TERRAIN_GEOMETRY && defined HELIAN_RT_SCENE
+            rtPosition = worldPos;
+        #endif
+        float isWater = float(mc_Entity.x == 8192);
+        shadowOffset.y = -isWater;
+        if (mc_Entity.x == 8192) {
             color.rgb = worldPos;
-            color.a = 0.98 - pow(1.0 - clamp(abs(dot(shadowModelViewInverse[2].xyz, worldNormal)), 0.0, 1.0), 5.0) * 0.98;
         }
-        float isWaterF = float(isWater);
-        shadowOffset.y = -isWaterF;
-        float isTransparent = float(abs(textureLod(gtexture, mc_midTexCoord.st + 1e-6, 0.0).w - 0.5) + 1e-4 < 0.49) * (1.0 - isWaterF);
-        shadowOffset.x = -isTransparent;
+        #ifdef RT_ENTITY_GEOMETRY
+            shadowOffset = vec2(0.0);
+        #else
+            float isTransparent = float(abs(textureLod(gtexture, mc_midTexCoord.st + 1e-6, 0.0).w - 0.5) + 1e-4 < 0.49) * (1.0 - isWater);
+            shadowOffset.x = -isTransparent;
+        #endif
 
         gl_Position = gl_ProjectionMatrix * viewPos;
         float clipLengthInv = inversesqrt(dot(gl_Position.xy, gl_Position.xy));
-        float shadowDistortion = log2(distortionStrength / clipLengthInv + 1.0) / log2(distortionStrength + 1.0) * 0.5;
+        float shadowDistortion = log(distortionStrength / clipLengthInv + 1.0) / log(distortionStrength + 1.0) * 0.5;
         gl_Position.xy *= max(0.0, clipLengthInv * shadowDistortion);
         gl_Position.xy = gl_Position.xy + 0.5 + shadowOffset;
         gl_Position.z *= 0.2;

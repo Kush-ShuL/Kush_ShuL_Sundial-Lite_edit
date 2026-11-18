@@ -18,7 +18,11 @@
 
 #extension GL_ARB_gpu_shader5 : enable
 
-layout(location = 0) out vec4 gbufferData4;
+layout(location = 0) out vec4 weatherMask;
+/*
+const int colortex19Format = R8;
+*/
+const vec4 colortex19ClearColor = vec4(0.6, 0.0, 0.0, 1.0);
 
 in vec4 color;
 in vec3 worldPos;
@@ -36,6 +40,7 @@ in vec2 texcoord;
 #include "/libs/Shadow.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     vec4 albedoData = texture(gtexture, texcoord) * color;
 
     vec2 rainTexcoord = vec2(fract(texcoord.x * RAIN_DROP_AMOUNT), texcoord.y);
@@ -60,7 +65,7 @@ void main() {
 
     float lightData = 0.5 + sunlightStrength * 0.5;
 
-    gbufferData4 = vec4(0.0, 0.0, 0.0, (rainOrSnow * lightData) * 0.4 + 0.6);
+    weatherMask = vec4((rainOrSnow * lightData) * 0.4 + 0.6, 0.0, 0.0, 1.0);
 }
 
-/* DRAWBUFFERS:4 */
+/* RENDERTARGETS: 19 */

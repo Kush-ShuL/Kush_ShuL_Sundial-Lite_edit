@@ -14,6 +14,9 @@ vec2 clampCoordRange(vec2 coord, vec4 coordRange) {
 }
 
 vec3 anisotropicOffsetLod(vec2 albedoTexSize, vec2 atlasTexelSize, vec2 texGradX, vec2 texGradY, vec2 quadSize) {
+    vec2 footprintScale = srMaterialFootprintScale();
+    texGradX *= footprintScale.x;
+    texGradY *= footprintScale.y;
     //https://www.shadertoy.com/view/4lXfzn
     mat2 qd = inverse(mat2(texGradX * albedoTexSize, texGradY * albedoTexSize));
     qd = transpose(qd) * qd;
@@ -27,9 +30,9 @@ vec3 anisotropicOffsetLod(vec2 albedoTexSize, vec2 atlasTexelSize, vec2 texGradX
     float v = t + D;
     float l = max(0.0, -0.5 * log2(v));
 
-    vec2 A = vec2(qd[0][1], V - qd[0][0]);
+    vec2 A = vec2(qd[0][1], qd[0][0] - V);
     A *= inversesqrt(V * dot(A, A)) / ANISOTROPIC_FILTERING_QUALITY;
-    A = signMul(max(vec2(0.0), abs(A)), A) * atlasTexelSize * quadSize;
+    A = max(vec2(0.0), abs(A)) * atlasTexelSize * quadSize;
     return vec3(A, l);
 }
 
@@ -57,44 +60,10 @@ vec4 anisotropicFilter(vec2 coord, vec2 offset, float lod, vec4 coordRange, vec2
     return albedo;
 }
 
-mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 textureScale) {
-    vec3 dPosDX = dFdx(position);
-    vec3 dPosDY = dFdy(position);
-
-    vec3 normal = cross(dPosDX, dPosDY);
-
-    vec3 tangentHelper = dPosDY * dCoordDX.x - dPosDX * dCoordDY.x;
-    vec3 tangent = cross(tangentHelper, normal);
-
-    vec3 bitangentHelper = dPosDY * dCoordDX.y - dPosDX * dCoordDY.y;
-    vec3 bitangent = cross(bitangentHelper, normal);
-
-    float tangentLen = dot(tangent, tangent);
-    tangentLen = inversesqrt(tangentLen + float(tangentLen == 0.0));
-    float bitangentLen = dot(bitangent, bitangent);
-    bitangentLen = inversesqrt(bitangentLen + float(bitangentLen == 0.0));
-
-    textureScale = vec2(tangentLen * dot(tangentHelper, tangentHelper), bitangentLen * dot(bitangentHelper, bitangentHelper));
-
-    return mat3(tangent * tangentLen, bitangent * bitangentLen, normalize(normal));
-}
-
 #ifdef MC_NORMAL_MAP
-    #if SMOOTH_PARALLAX_OFFSET == 0
-        const vec2 smoothParallaxOffset = vec2(0.0);
-    #elif SMOOTH_PARALLAX_OFFSET == 1
-        const vec2 smoothParallaxOffset = vec2(-1.0, -1.0);
-    #elif SMOOTH_PARALLAX_OFFSET == 2
-        const vec2 smoothParallaxOffset = vec2(-1.0,  1.0);
-    #elif SMOOTH_PARALLAX_OFFSET == 3
-        const vec2 smoothParallaxOffset = vec2( 1.0, -1.0);
-    #elif SMOOTH_PARALLAX_OFFSET == 4
-        const vec2 smoothParallaxOffset = vec2( 1.0,  1.0);
-    #endif
-
     vec4 heightGather(sampler2D normalSampler, vec2 coord, vec2 coord00, vec4 coordRange, vec2 quadTexelSize, vec2 normalTexSize) {
         ivec2 texel00 = ivec2(coord00);
-        ivec2 texel11 = ivec2(clampCoordRange(coord + quadTexelSize, coordRange) * normalTexSize);
+        ivec2 texel11 = ivec2(clampCoordRange(coord + 0.499 * quadTexelSize, coordRange) * normalTexSize);
         vec4 sh = vec4(
             texelFetch(normalSampler, ivec2(texel00.x, texel11.y), 0).a,
             texelFetch(normalSampler, texel11, 0).a,
@@ -106,7 +75,7 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
     }
 
     float bilinearHeightSample(sampler2D normalSampler, vec2 coord, vec4 coordRange, vec2 quadTexelSize, vec2 normalTexSize) {
-        vec2 coord00 = clampCoordRange(coord - quadTexelSize, coordRange) * normalTexSize;
+        vec2 coord00 = clampCoordRange(coord - 0.499 * quadTexelSize, coordRange) * normalTexSize;
         vec4 sh = heightGather(normalSampler, coord, coord00, coordRange, quadTexelSize, normalTexSize);
         vec2 fpc = fract(coord00);
         vec2 x = mix(sh.wx, sh.zy, vec2(fpc.x));
@@ -114,12 +83,9 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
     }
 
     vec3 heightBasedNormal(sampler2D normalSampler, vec2 coord, vec4 coordRange, vec2 quadTexelSize, vec2 normalTexSize, vec2 pixelScale) {
-        #ifdef SMOOTH_PARALLAX
-            coord += smoothParallaxOffset * 0.5 / normalTexSize;
-        #endif
         vec2 tileCoord = (coord - coordRange.xy) / coordRange.zw;
         vec2 coord00 = clampCoordRange(tileCoord - 0.499 * quadTexelSize, coordRange) * normalTexSize;
-        vec4 sh = heightGather(normalSampler, tileCoord, coord00, coordRange, 0.499 * quadTexelSize, normalTexSize);
+        vec4 sh = heightGather(normalSampler, tileCoord, coord00, coordRange, quadTexelSize, normalTexSize);
 
         vec2 fpc = fract(coord00);
         sh.y = sh.x + sh.z - sh.w - sh.y;
@@ -152,7 +118,7 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
     }
 
     vec2 perPixelParallax(
-        vec2 coord, vec3 viewPos, mat3 tbnMatrix, vec2 textureScale, vec2 albedoTexSize, vec2 atlasTexelSize, vec4 coordRange,
+        vec2 coord, vec3 viewVector, vec2 albedoTexSize, vec2 atlasTexelSize, vec4 coordRange,
         inout vec3 parallaxTexNormal, inout float parallaxOffset
     ) {
         vec2 parallaxCoord = coord;
@@ -161,8 +127,7 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
         sampleHeight += clamp(1.0 - sampleHeight * 1e+10, 0.0, 1.0);
 
         if (sampleHeight < 0.999) {
-            vec3 stepDir = viewPos * tbnMatrix;
-            stepDir.xy *= textureScale;
+            vec3 stepDir = viewVector;
             stepDir.xy *= PARALLAX_DEPTH * albedoTexSize * 0.2;
             stepDir = normalize(stepDir);
             stepDir.z = -stepDir.z;
@@ -203,19 +168,15 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
     }
 
     vec2 calculateParallax(
-        vec2 coord, vec3 viewPos, mat3 tbnMatrix, vec2 textureScale, vec4 coordRange, vec2 quadSize, vec2 albedoTexSize, vec2 albedoTexelSize, inout float parallaxOffset
+        vec2 coord, vec3 viewVector, vec4 coordRange, vec2 quadSize, vec2 albedoTexSize, vec2 albedoTexelSize, inout float parallaxOffset
     ) {
+        vec2 quadTexelSize = albedoTexelSize * quadSize;
+
         vec3 parallaxCoord = vec3(coord, 1.0);
 
-        #ifdef SMOOTH_PARALLAX
-            coord += smoothParallaxOffset * 0.5 * albedoTexelSize;
-        #endif
         vec2 firstCoord = (coord - coordRange.xy) * quadSize;
         #ifdef SMOOTH_PARALLAX
-            vec2 quadTexelSize = 0.499 * albedoTexelSize * quadSize;
-            vec2 coord00 = clampCoordRange(firstCoord - quadTexelSize, coordRange) * albedoTexSize;
-            vec4 sh = heightGather(normals, firstCoord, coord00, coordRange, quadTexelSize, albedoTexSize);
-            float startHeight = dot(sh, vec4(0.25));
+            float startHeight = bilinearHeightSample(normals, firstCoord, coordRange, quadTexelSize, albedoTexSize);
         #else
             float startHeight = textureLod(normals, parallaxCoord.st, 0.0).a;
             startHeight += clamp(1.0 - startHeight * 1e+10, 0.0, 1.0);
@@ -223,8 +184,6 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
 
         if (startHeight < 1.0) {
             parallaxCoord.st = firstCoord;
-            vec3 viewVector = viewPos * tbnMatrix;
-            viewVector.xy *= textureScale;
             vec3 stepSize = viewVector / (PARALLAX_QUALITY * abs(viewVector.z));
             stepSize.xy *= PARALLAX_DEPTH * 0.2 * quadSize;
             float stepScale = 2.0 / PARALLAX_QUALITY;
@@ -258,9 +217,6 @@ mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 texture
                 }
             }
             parallaxCoord += 2.0 * stepSize * stepScale;
-            #ifdef SMOOTH_PARALLAX
-                parallaxCoord.st -= smoothParallaxOffset * 0.5 * albedoTexelSize * quadSize;
-            #endif
             parallaxCoord.st = clampCoordRange(parallaxCoord.st, coordRange);
         }
         parallaxOffset = 1.0 - parallaxCoord.z;

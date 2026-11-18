@@ -22,6 +22,10 @@ out vec2 texcoord;
     out float prevExposure;
 #endif
 
+#ifdef SMOOTH_CENTER_DEPTH
+    out float smoothCenterDepth;
+#endif
+
 #define DOF_FOCUS_TEXTURE 2 // [0 1 2]
 
 #include "/settings/GlobalSettings.glsl"
@@ -30,30 +34,13 @@ out vec2 texcoord;
 #ifdef SKY_COLOR_UP
     out vec3 skyColorUp;
 
-    #include "/settings/CloudSettings.glsl"
     #include "/libs/Atmosphere.glsl"
 #endif
 
-#ifdef PREV_HAND_ANIMATION
-    out vec2 prevHandAnimation;
-    out vec2 temporalHandRotation;
-
-    #include "/libs/Common.glsl"
-#endif
-
-#ifdef SMOOTH_CENTER_DEPTH
-    out float smoothCenterDepth;
-
-    #include "/libs/GbufferData.glsl"
-#endif
-
 void main() {
-    vec2 offset = vec2(-float(gl_VertexID & 2), float(min(gl_VertexID, 1) << 1)) + vec2(1.0, -1.0);
-    #if SR_ENABLE && !defined AFTER_SR
-        offset *= renderScale;
-    #endif
+    ivec2 offset = ivec2((min(gl_VertexID, 2) & 1) << 1, gl_VertexID & 2);
     texcoord = offset;
-    gl_Position = vec4(offset * 2.0 - 1.0, 0.0, 1.0);
+    gl_Position = srScalePosition(vec4(offset * 2.0 - 1.0, 0.0, 1.0));
 
     #ifdef AVERAGE_EXPOSURE
         prevExposure = texelFetch(colortex7, ivec2(0), 0).w;
@@ -61,36 +48,21 @@ void main() {
 
     #ifdef SMOOTH_CENTER_DEPTH
         float prevCenterDepth = texelFetch(colortex7, ivec2(screenSize - 0.5), 0).w;
-        vec2 screenCenter = vec2(0.5);
-        #if SR_ENABLE
-            screenCenter *= renderScale;
-        #endif
         #if DOF_FOCUS_TEXTURE == 0
-            float currCenterDepth = textureLod(depthtex0, screenCenter, 0.0).x;
+            float currCenterDepth = srTextureLodLow(depthtex0, vec2(0.5), 0.0).x;
         #elif DOF_FOCUS_TEXTURE == 1
-            float currCenterDepth = textureLod(depthtex1, screenCenter, 0.0).x;
+            float currCenterDepth = srTextureLodLow(depthtex1, vec2(0.5), 0.0).x;
         #else
-            float currCenterDepth = textureLod(depthtex2, screenCenter, 0.0).x;
+            float currCenterDepth = srTextureLodLow(depthtex2, vec2(0.5), 0.0).x;
         #endif
-        ivec2 centerTexel = ivec2(screenSize * screenCenter);
-        vec4 centerGbufferData = texelFetch(colortex2, centerTexel, 0);
-        float materialData = centerGbufferData.a;
-        uint uMaterialData = floatBitsToUint(materialData * 65535.0 / 65536.0 + 65536.5 / 65536.0);
+        float materialID = srTexelFetchLow(colortex2, ivec2(screenSize * 0.5), 0).a;
+        uint uMaterialID = floatBitsToUint(materialID * 65535.0 / 65536.0 + 65536.5 / 65536.0);
+        uMaterialID = (uMaterialID >> 15) & 0x000000FFu;
         #if (defined CORRECT_DOF_HAND_DEPTH) && (DOF_FOCUS_TEXTURE != 2)
-            uint uMaterialID = (uMaterialData >> 20) & 0x0000007u;
-            float handDepth = currCenterDepth / MC_HAND_DEPTH - 0.5 / MC_HAND_DEPTH + 0.5;
-            if (uMaterialID == 2u && abs(handDepth - 0.5) < 0.5) {
+            float handDepth = decodeHandDepth(currCenterDepth);
+            if (uMaterialID == 9u && abs(handDepth - 0.5) < 0.5) {
                 currCenterDepth = handDepth;
             }
-        #endif
-        #ifdef PARALLAX_DOF
-            float viewCurrCenterDepth = screenToViewDepth(currCenterDepth);
-            uint uParallaxOffset = ((uMaterialData << 3) & 0x007FFC00u) | 0x3F800000u;
-            float parallaxOffset = uintBitsToFloat(uParallaxOffset) * 8192.0 / 8191.0 - 8192.0 / 8191.0;
-            vec2 geoNormalData = centerGbufferData.xy * 2.0 - 1.0;
-            float geoNormalZ = 1.0 - abs(geoNormalData.x) - abs(geoNormalData.y);
-            viewCurrCenterDepth += (parallaxOffset * 0.2 * PARALLAX_DEPTH) / max(1e-5, abs(geoNormalZ));
-            currCenterDepth = viewToScreenDepth(viewCurrCenterDepth);
         #endif
         float fadeFactor = exp(log(0.5) * frameTime * 10.0 / centerDepthHalflife) * float(prevCenterDepth > 0.0);
         smoothCenterDepth = mix(currCenterDepth, prevCenterDepth, fadeFactor);
@@ -99,27 +71,5 @@ void main() {
     #ifdef SKY_COLOR_UP
         vec3 atmosphere;
         skyColorUp = atmosphereScatteringUp(sunDirection.y, 30.0);
-    #endif
-
-    #ifdef PREV_HAND_ANIMATION
-        float prevHandRotationX = uintBitsToFloat(texelFetch(colortex6, ivec2(0, 0), 0).x);
-        float prevHandRotationY = uintBitsToFloat(texelFetch(colortex6, ivec2(1, 0), 0).x);
-        float currHeadRotationX = atan(gbufferModelView[0].x, -gbufferModelView[2].x);
-        float currHeadRotationY = asin(clamp(gbufferModelView[1].z, -1.0, 1.0));
-        float blendFactor = exp2(-20.0 * frameTime);
-        float currHandRotationX = mix(currHeadRotationX, prevHandRotationX + float(abs(currHeadRotationX - prevHandRotationX) > PI) * signMul(2.0 * PI, currHeadRotationX), blendFactor);
-        float currHandRotationY = mix(currHeadRotationY, prevHandRotationY, blendFactor);
-        temporalHandRotation = vec2(currHandRotationX, currHeadRotationY);
-
-        float prevHeadRotationX = atan(gbufferPreviousModelView[0].x, -gbufferPreviousModelView[2].x);
-        float prevHeadRotationY = asin(clamp(gbufferPreviousModelView[1].z, -1.0, 1.0));
-        prevHandRotationX = prevHeadRotationX - prevHandRotationX - float(abs(prevHeadRotationX - prevHandRotationX) > PI) * signMul(2.0 * PI, prevHeadRotationX);
-        prevHandRotationY = prevHeadRotationY - prevHandRotationY;
-        currHandRotationX = currHeadRotationX - currHandRotationX;
-        currHandRotationY = currHeadRotationY - currHandRotationY;
-
-        float prevHandAnimationX = (prevHandRotationX - currHandRotationX) * 0.1;
-        float prevHandAnimationY = (prevHandRotationY - currHandRotationY) * 0.1;
-        prevHandAnimation = vec2(prevHandAnimationX, prevHandAnimationY);
     #endif
 }

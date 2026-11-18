@@ -17,23 +17,25 @@
 //
 
 #if MC_VERSION >= 11700
-    in vec4 mc_midTexCoord;
-    in vec4 at_tangent;
+in vec4 mc_midTexCoord;
 #elif MC_VERSION >= 11500
-    layout(location = 12) in vec4 mc_midTexCoord;
-    layout(location = 13) in vec4 at_tangent;
+layout(location = 12) in vec4 mc_midTexCoord;
 #else
-    layout(location = 11) in vec4 mc_midTexCoord;
+layout(location = 11) in vec4 mc_midTexCoord;
+#endif
+
+#if MC_VERSION < 11300
     layout(location = 12) in vec4 at_tangent;
+
+    out mat3 tbnMatrix;
 #endif
 
 // #define GLOWING_OVERLAY
 
 out vec4 color;
 out vec4 texlmcoord;
+out vec4 coordRange;
 out vec3 viewPos;
-
-noperspective out vec4 coordRange;
 
 #ifdef ENTITIES
     uniform vec4 entityColor;
@@ -43,16 +45,16 @@ uniform sampler2D gaux1;
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
+#include "/libs/Materials.glsl"
 #include "/libs/Common.glsl"
-
-#ifdef ENTITY_VERTEX_TBN
-    out mat3 vertexTbnMatrix;
-#endif
 
 void main() {
     viewPos = (gl_ModelViewMatrix * gl_Vertex).xyz;
 
     gl_Position = gl_ProjectionMatrix * vec4(viewPos, 1.0);
+    #ifdef HAND
+        gl_Position = foregroundHandPosition(gl_Position);
+    #endif
     color = gl_Color;
     texlmcoord.st = vec2(gl_TextureMatrix[0] * gl_MultiTexCoord0);
     texlmcoord.pq = gl_MultiTexCoord1.st / 240.0;
@@ -91,22 +93,15 @@ void main() {
         gl_Position.z -= 1e-5;
     #endif
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
 
-    #ifdef ENTITY_VERTEX_TBN
+    #if MC_VERSION < 11300
         vec3 viewNormal = normalize(gl_NormalMatrix * gl_Normal);
-        vec3 tangent = gl_NormalMatrix * at_tangent.xyz;
-        float tangentLength = dot(tangent, tangent);
-        tangent *= inversesqrt(tangentLength + float(tangentLength == 0.0));
-        vec3 bitangent = cross(tangent, viewNormal) * at_tangent.w;
-        float bitangentLength = dot(bitangent, bitangent);
-        bitangent *= inversesqrt(bitangentLength + float(bitangentLength == 0.0));
-        vertexTbnMatrix = mat3(tangent, bitangent, viewNormal);
+        vec3 tangent = normalize(gl_NormalMatrix * at_tangent.xyz);
+        vec3 bitangent = normalize(cross(tangent, viewNormal) * at_tangent.w);
+        tbnMatrix = mat3(tangent, bitangent, viewNormal);
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

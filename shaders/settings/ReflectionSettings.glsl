@@ -1,0 +1,23 @@
+#ifndef HELIAN_REFLECTION_SETTINGS
+#define HELIAN_REFLECTION_SETTINGS
+#define REFLECTION
+#define REFLECTION_MODE 0 // [0 1 2]
+#define RT_DISTANCE 96 // [16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 144 160 176 192 208 224 240 256]
+#define RT_BOUNCES 1 // [1 2 3 4]
+#define RT_SAMPLES 1 // [1 2 3 4 6 8]
+#define RT_STEPS 128 // [32 48 64 80 96 128 160 192 256 384 512]
+#define RT_MIN_SMOOTHNESS 0.0 // [0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95]
+#define RT_CACHE_K 1024 // [128 256 512 1024 2048 4096]
+#define RT_ENTITIES
+// #define RT_GI
+#define RT_GI_SAMPLES 2 // [1 2 4 6 8]
+#define RT_GI_SCALE 2 // [2 4]
+#define RT_GI_DISTANCE 24 // [4 8 16 24 32 48 64 96]
+#define RT_GI_STRENGTH 1.0 // [0.25 0.5 0.75 1.0 1.25 1.5 2.0]
+#if defined REFLECTION && REFLECTION_MODE != 0
+    #define HELIAN_VOXEL_RT
+#endif
+#if defined HELIAN_VOXEL_RT || defined RT_GI
+    #define HELIAN_RT_SCENE
+#endif
+#endif

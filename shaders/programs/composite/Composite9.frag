@@ -13,17 +13,12 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  TAA stage 2: sample and blend; Moving previous exposure and smooth center depth to let colortex7 flipped without info lost
+//  TAA stage 2: sample and blend
 //
 
 layout(location = 0) out vec4 texBuffer3;
-layout(location = 1) out uint texBuffer6;
 
 in vec2 texcoord;
-in float prevExposure;
-in float smoothCenterDepth;
-
-#define TAA_HISTORY_CLIP_VARIANCE 1.0 // [0.0 0.01 0.02 0.03 0.04 0.05 0.06 0.08 0.1 0.12 0.14 0.16 0.18 0.2 0.22 0.24 0.26 0.28 0.3 0.33 0.36 0.4 0.43 0.46 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 0.95 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0 2.2 2.4 2.6 2.8 3.0 3.2 3.4 3.6 3.8 4.0 4.2 4.4 4.6 4.8 5.0 5.5 6.0 6.5 7.0 7.5 8.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 17.0 18.0 19.0 20.0]
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
@@ -59,13 +54,15 @@ vec3 clipToEllipse(vec3 avgColor, vec3 variance, vec3 prevColor) {
     return avgColor + colorDiff;
 }
 
-void resolverAABB(ivec2 texel, out vec3 avgColor, out vec3 variance, float varianceScale, vec3 centerColor) {
+void resolverAABB(in vec2 coord, out vec3 avgColor, out vec3 variance, float varianceScale, vec3 centerColor) {
+    ivec2 texel = ivec2(gl_FragCoord.st);
+
     vec3 m1 = vec3(0.0);
     vec3 m2 = vec3(0.0);
 
     for (int i = -1; i < 2; i++) {
         for (int j = -1; j < 2; j++) {
-            vec3 sampleColor = RGB_YCoCg(texelFetch(colortex3, texel + ivec2(i, j), 0).rgb * 0.1);
+            vec3 sampleColor = RGB_YCoCg(srTexelFetchScene(colortex3, texel + ivec2(i, j), 0).rgb * 0.1);
 
             m1 += sampleColor;
             m2 += sampleColor * sampleColor;
@@ -75,7 +72,7 @@ void resolverAABB(ivec2 texel, out vec3 avgColor, out vec3 variance, float varia
     m1 /= 9.0;
     m2 /= 9.0;
 
-    vec3 sampleVariance = sqrt(m2 - m1 * m1) * varianceScale * TAA_HISTORY_CLIP_VARIANCE;
+    vec3 sampleVariance = sqrt(max(m2 - m1 * m1, vec3(0.0))) * varianceScale;
 
     vec3 minColor = m1 - sampleVariance;
     vec3 maxColor = m1 + sampleVariance;
@@ -87,11 +84,12 @@ void resolverAABB(ivec2 texel, out vec3 avgColor, out vec3 variance, float varia
     variance = maxColor - minColor;
 }
 
-vec3 getCurrColorNeighborhood(ivec2 texel, vec3 currColor) {
+vec3 getCurrColorNeighborhood(vec3 currColor) {
+    ivec2 texel = ivec2(gl_FragCoord.st);
     vec3 colorAccum = currColor;
     for (int i = -1; i < 2; i += 2) {
         for (int j = -1; j < 2; j += 2) {
-            colorAccum += texelFetch(colortex3, texel + ivec2(i, j), 0).rgb;
+            colorAccum += srTexelFetchScene(colortex3, texel + ivec2(i, j), 0).rgb;
         }
     }
     colorAccum *= 0.2;
@@ -117,15 +115,15 @@ vec3 catmullRomFilter(vec2 prevCoord) {
     vec2 tc3 = (prevUV + 2.0) * texelSize;
 
     vec4 prevColor =
-        vec4(textureLod(colortex4, vec2(m0.x, tc0.y), 0.0).rgb, 1.0) * s0.x * w0.y +
-        vec4(textureLod(colortex4, vec2(tc0.x, m0.y), 0.0).rgb, 1.0) * w0.x * s0.y +
-        vec4(textureLod(colortex4, m0, 0.0).rgb               , 1.0) * s0.x * s0.y +
-        vec4(textureLod(colortex4, vec2(tc3.x, m0.y), 0.0).rgb, 1.0) * w3.x * s0.y +
-        vec4(textureLod(colortex4, vec2(m0.x, tc3.y), 0.0).rgb, 1.0) * s0.x * w3.y;
+        vec4(srTextureLodScene(colortex4, vec2(m0.x, tc0.y), 0.0).rgb, 1.0) * s0.x * w0.y +
+        vec4(srTextureLodScene(colortex4, vec2(tc0.x, m0.y), 0.0).rgb, 1.0) * w0.x * s0.y +
+        vec4(srTextureLodScene(colortex4, m0, 0.0).rgb               , 1.0) * s0.x * s0.y +
+        vec4(srTextureLodScene(colortex4, vec2(tc3.x, m0.y), 0.0).rgb, 1.0) * w3.x * s0.y +
+        vec4(srTextureLodScene(colortex4, vec2(m0.x, tc3.y), 0.0).rgb, 1.0) * s0.x * w3.y;
     return prevColor.rgb / prevColor.w;
 }
 
-vec3 temporalAntiAliasing(vec2 coord, ivec2 texel, vec2 velocity, vec3 currentColor, float blendWeight) {
+vec3 temporalAntiAliasing(vec2 coord, vec2 velocity, vec3 currentColor, float blendWeight, bool skyPixel) {
     vec3 antiAliasing;
     if (blendWeight > 0.01) {
         vec2 reprojectCoord = coord + velocity;
@@ -134,49 +132,55 @@ vec3 temporalAntiAliasing(vec2 coord, ivec2 texel, vec2 velocity, vec3 currentCo
 
         vec3 avgColor;
         vec3 variance;
-        resolverAABB(texel, avgColor, variance, 2.0, currentColor);
+        resolverAABB(coord.st, avgColor, variance, 2.0, currentColor);
 
+        vec3 unclippedPreviousColor = previousColor;
         previousColor = clipToEllipse(avgColor, variance, previousColor);
+
+        // Dynamic objects, particles and disoccluded edges do not always have
+        // usable per-object motion vectors. Reduce history only when its color
+        // disagrees with the current neighborhood or had to be clipped.
+        vec3 clipDelta = abs(unclippedPreviousColor - previousColor);
+        float clipMismatch = max(clipDelta.x, max(clipDelta.y, clipDelta.z));
+        float luminanceMismatch = abs(unclippedPreviousColor.x - currentColor.x);
+        float reactiveWeight = smoothstep(0.025, 0.20, max(luminanceMismatch, clipMismatch * 2.0));
+        // Volumetric clouds intentionally jitter their ray-march samples. Treating
+        // that variation as a dynamic object rejects the history that denoises it.
+        if (!skyPixel) {
+            blendWeight *= 1.0 - reactiveWeight;
+        }
 
         antiAliasing = mix(currentColor, previousColor, vec3(blendWeight));
         antiAliasing = YCoCg_RGB(antiAliasing) * 10.0;
     }
     else {
-        antiAliasing = getCurrColorNeighborhood(texel, currentColor);
+        antiAliasing = getCurrColorNeighborhood(currentColor);
     }
 
     return antiAliasing;
 }
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     ivec2 texel = ivec2(gl_FragCoord.st);
-    vec4 velocity = texelFetch(colortex5, texel, 0);
-    vec3 solidColor = texelFetch(colortex3, texel, 0).rgb;
+    vec4 velocity = srTexelFetchScene(colortex5, texel, 0);
+    vec3 solidColor = srTexelFetchScene(colortex3, texel, 0).rgb;
 
-    #if SR_ENABLE
-        velocity.st *= renderScale;
+    #if defined TAA && !defined HELIAN_SR_ACTIVE
+        float sceneDepth = srTexelFetchLow(depthtex0, texel, 0).r;
+        #ifdef LOD
+            if (sceneDepth == 1.0) {
+                sceneDepth = getLodDepthWater(texcoord);
+            }
+        #endif
+        bool skyPixel = sceneDepth >= 0.999999;
+        solidColor = temporalAntiAliasing(texcoord, velocity.st, solidColor, velocity.w, skyPixel);
     #endif
-    #if defined TAA && !(SR_ENABLE && SR_ALGO_SUPPORTS_JITTER)
-        solidColor = temporalAntiAliasing(texcoord, texel, velocity.st, solidColor, velocity.w);
+    #ifdef HELIAN_SR_ACTIVE
+        texBuffer3 = vec4(solidColor * 0.5, 1.0);
+    #else
+        texBuffer3 = vec4(pow(clamp(solidColor * 0.1, 0.0, 1.0), vec3(2.2)) * 100.0, 1.0);
     #endif
-    #if SR_ENABLE
-        if (any(lessThan(vec2(renderScale), texcoord))) {
-            solidColor = vec3(0.0);
-        }
-    #endif
-    texBuffer3 = vec4(pow(clamp(solidColor * 0.1, 0.0, 1.0), vec3(2.2)) * 100.0, 1.0);
-
-    float depth = textureLod(depthtex0, texcoord, 0.0).x;
-    #ifdef LOD
-        depth += getLodDepthWater(texcoord) * float(depth == 1.0);
-    #endif
-    if (dot(texcoord, screenSize) < 1.1) {
-        depth = prevExposure;
-    }
-    if (dot(1.0 - texcoord, screenSize) < 1.1) {
-        depth = smoothCenterDepth;
-    }
-    texBuffer6 = floatBitsToUint(depth);
 }
 
-/* DRAWBUFFERS:36 */
+/* DRAWBUFFERS:3 */

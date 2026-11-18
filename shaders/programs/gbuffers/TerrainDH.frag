@@ -31,6 +31,7 @@ flat in vec3 blockData;
 #include "/libs/Parallax.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     vec3 worldPos = viewToWorldPos(viewPos);
     if (max(dot(worldPos.xz, worldPos.xz), worldPos.y * worldPos.y) < (far - 16.0) * (far - 16.0)) {
         discard;
@@ -38,19 +39,12 @@ void main() {
 
     GbufferData rawData;
 
-    vec4 albedo = vec4(color, 1.0);
+	vec4 albedo = vec4(color, 1.0);
     vec3 mcPos = worldPos + cameraPosition;
-    ivec3 pixelPos = ivec3(floor(mcPos * 16.0 + 1e-3));
-    ivec2 texel = (pixelPos.xz + 17 * pixelPos.y) & 63;
-    float noise = texelFetch(noisetex, texel, 0).r;
-    albedo.rgb = pow(albedo.rgb, vec3(noise * 0.3 + 0.85));
-    #ifdef DISTANT_HORIZONS_TEXTURES
-        if (dh_hasTexture()) {
-            albedo = dh_sampleTexture();
-            vec3 clampedColor = clamp(color.rgb * (albedo.rgb * 2.0), 0.0, 1.0);
-            albedo.rgb = mix(color.rgb, clampedColor, albedo.a);
-        }
-    #endif
+	ivec3 pixelPos = ivec3(floor(mcPos * 16.0 + 1e-3));
+	ivec2 texel = (pixelPos.xz + 17 * pixelPos.y) & 63;
+	float noise = texelFetch(noisetex, texel, 0).r;
+	albedo.rgb = pow(albedo.rgb, vec3(noise * 0.3 + 0.85));
 
     vec3 dPosDX = dFdx(viewPos);
     vec3 dPosDY = dFdy(viewPos);

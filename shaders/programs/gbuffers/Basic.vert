@@ -18,6 +18,7 @@
 
 flat out vec4 color;
 out vec2 lmcoord;
+noperspective out vec2 basicLineCenter;
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
@@ -27,11 +28,9 @@ void main() {
     lmcoord = gl_MultiTexCoord1.st / 240.0;
     gl_Position = ftransform();
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
+    basicLineCenter = gl_Position.xy / gl_Position.w;
 }

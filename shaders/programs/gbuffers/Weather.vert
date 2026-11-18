@@ -39,11 +39,8 @@ void main() {
     color = gl_Color;
     texcoord = vec2(gl_TextureMatrix[0] * gl_MultiTexCoord0);
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

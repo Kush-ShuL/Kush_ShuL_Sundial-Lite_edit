@@ -25,76 +25,67 @@ layout(location = 2) out vec4 texBuffer5;
 in float smoothCenterDepth;
 in vec2 texcoord;
 
-#ifdef SHADOW_AND_SKY
-    in vec3 skyColorUp;
-#endif
+uniform vec2 prevTaaOffset;
 
-// Depth of field
-    // #define DEPTH_OF_FIELD
-    #define FOCUS_MODE 0 // [0 1]
-    #define HAND_DOF
-    #define COC_SPREAD_SAMPLES 10 // [2 3 4 5 6 7 8 9 10 12 14 16 18 20 22 25 30 35 40 45 50 60 70 80 90 100]
-    #define FOCAL_LENGTH 0.01 // [0.001 0.002 0.003 0.004 0.005 0.006 0.007 0.008 0.009 0.01 0.015 0.02 0.025 0.03 0.035 0.04 0.045 0.05 0.06 0.07 0.08 0.09 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.6 0.7 0.8 0.9 1.0]
-    #define MANUAL_FOCUS_DEPTH 100.0 // [0.1 0.2 0.3 0.4 0.5 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0 2.3 2.6 2.9 3.2 3.5 4.0 4.5 5.0 5.5 6.0 6.5 7.0 7.5 8.0 8.5 9.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 18.0 20.0 22.0 24.0 27.0 30.0 35.0 40.0 45.0 50.0 55.0 60.0 65.0 70.0 80.0 90.0 100.0 110.0 120.0 130.0 140.0 160.0 180.0 200.0 250.0 300.0 400.0 500.0]
-    #define APERTURE_DIAMETER_SCALE 0.26 // [0.01 0.02 0.03 0.04 0.06 0.08 0.1 0.12 0.14 0.16 0.18 0.2 0.22 0.24 0.26 0.28 0.3 0.35 0.4 0.45 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0 2.2 2.4 2.6 2.8 3.0 3.2 3.4 3.6 3.8 4.0 4.2 4.4 4.6 4.8 5.0 5.5 6.0 6.5 7.0 7.5 8.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 17.0 18.0 19.0 20.0 22.0 24.0 26.0 28.0 30.0 32.0 34.0 36.0 38.0 40.0 42.0 44.0 46.0 48.0 50.0 55.0 60.0 65.0 70.0 75.0 80.0 85.0 90.0 95.0 100.0]
-
-// TAA
-    #define TAA_HISTORY_WEIGHT 0.95 // [0.5 0.6 0.65 0.7 0.75 0.8 0.82 0.84 0.86 0.88 0.9 0.91 0.92 0.93 0.94 0.95 0.96 0.97 0.98 0.99]
+// #define DEPTH_OF_FIELD
+#define FOCUS_MODE 0 // [0 1]
+#define HAND_DOF
+#define COC_SPREAD_SAMPLES 10 // [2 3 4 5 6 7 8 9 10 12 14 16 18 20 22 25 30 35 40 45 50 60 70 80 90 100]
+#define FOCAL_LENGTH 0.01 // [0.001 0.002 0.003 0.004 0.005 0.006 0.007 0.008 0.009 0.01 0.015 0.02 0.025 0.03 0.035 0.04 0.045 0.05 0.06 0.07 0.08 0.09 0.1 0.15 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.6 0.7 0.8 0.9 1.0]
+#define MANUAL_FOCUS_DEPTH 100.0 // [0.1 0.2 0.3 0.4 0.5 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0 2.3 2.6 2.9 3.2 3.5 4.0 4.5 5.0 5.5 6.0 6.5 7.0 7.5 8.0 8.5 9.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 18.0 20.0 22.0 24.0 27.0 30.0 35.0 40.0 45.0 50.0 55.0 60.0 65.0 70.0 80.0 90.0 100.0 110.0 120.0 130.0 140.0 160.0 180.0 200.0 250.0 300.0 400.0 500.0]
+#define APERTURE_DIAMETER_SCALE 0.26 // [0.01 0.02 0.03 0.04 0.06 0.08 0.1 0.12 0.14 0.16 0.18 0.2 0.22 0.24 0.26 0.28 0.3 0.35 0.4 0.45 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0 2.2 2.4 2.6 2.8 3.0 3.2 3.4 3.6 3.8 4.0 4.2 4.4 4.6 4.8 5.0 5.5 6.0 6.5 7.0 7.5 8.0 9.5 10.0 11.0 12.0 13.0 14.0 15.0 16.0 17.0 18.0 19.0 20.0 22.0 24.0 26.0 28.0 30.0 32.0 34.0 36.0 38.0 40.0 42.0 44.0 46.0 48.0 50.0 55.0 60.0 65.0 70.0 75.0 80.0 85.0 90.0 95.0 100.0]
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/GbufferData.glsl"
 
-float getFarthestPrevDepth(vec2 coord) {
-    float farthest = 0.0;
+float getClosestPrevDepth(vec2 coord) {
+    float closest = 2.0;
 
     vec4 samples = textureGather(colortex7, coord - vec2(0.5) * texelSize, 3);
-    farthest = max(max(samples.x, samples.y), max(samples.z, samples.w));
+    closest = min(min(samples.x, samples.y), min(samples.z, samples.w));
 
     samples = textureGather(colortex7, coord + vec2(0.5) * texelSize, 3);
-    farthest = max(max(samples.x, samples.y), max(samples.z, farthest));
+    closest = min(min(samples.x, samples.y), min(samples.z, closest));
 
     ivec2 texel = ivec2(coord * screenSize);
-    farthest = max(farthest, texelFetch(colortex7, texel + ivec2( 1, -1), 0).w);
-    farthest = max(farthest, texelFetch(colortex7, texel + ivec2(-1,  1), 0).w);
+    closest = min(closest, texelFetch(colortex7, texel + ivec2( 1, -1), 0).w);
+    closest = min(closest, texelFetch(colortex7, texel + ivec2(-1,  1), 0).w);
 
-    return farthest;
+    return closest;
 }
 
 #ifdef LOD
     vec4 depthGatherLod(vec2 coord) {
         #ifdef DISTANT_HORIZONS
-            return textureGather(dhDepthTex0, coord, 0);
+            return srTextureGatherLow(dhDepthTex0, coord, 0);
         #endif
         #ifdef VOXY
-            #if SR_ENABLE
-                coord *= upscaleRatio;
-            #endif
-            return textureGather(vxDepthTexTrans, coord, 0);
+            return srTextureGatherVoxyDepth(vxDepthTexTrans, coord, 0);
         #endif
-        return textureGather(depthtex0, coord, 0);
+        return srTextureGatherLow(depthtex0, coord, 0);
     }
 #endif
 
 float getClosestDepth(vec2 coord) {
     float closest = 2.0;
 
-    vec4 samples = textureGather(depthtex0, coord - vec2(0.5) * texelSize, 0);
+    vec4 samples = srTextureGatherLow(depthtex0, coord - vec2(0.5) * texelSize, 0);
     #ifdef LOD
         samples += step(1.0, samples) * depthGatherLod(coord - vec2(0.5) * texelSize);
     #endif
     closest = min(min(samples.x, samples.y), min(samples.z, samples.w));
 
-    samples = textureGather(depthtex0, coord + vec2(0.5) * texelSize, 0);
+    samples = srTextureGatherLow(depthtex0, coord + vec2(0.5) * texelSize, 0);
     #ifdef LOD
         samples += step(1.0, samples) * depthGatherLod(coord + vec2(0.5) * texelSize);
     #endif
     closest = min(min(samples.x, samples.y), min(samples.z, closest));
 
     samples.xy = vec2(
-        textureLod(depthtex0, coord + vec2( texelSize.x, -texelSize.y), 0.0).r,
-        textureLod(depthtex0, coord + vec2(-texelSize.x,  texelSize.y), 0.0).r
+        srTextureLodLow(depthtex0, coord + vec2( texelSize.x, -texelSize.y), 0.0).r,
+        srTextureLodLow(depthtex0, coord + vec2(-texelSize.x,  texelSize.y), 0.0).r
     );
     #ifdef LOD
         samples.xy += step(vec2(1.0), samples.xy) * vec2(
@@ -110,36 +101,44 @@ float getClosestDepth(vec2 coord) {
 
 vec3 calculateVelocity(vec3 coord, ivec2 texel, float materialID, float parallaxOffset) {
     vec3 view = coord;
-    vec3 geoNormal = decodeNormal(texelFetch(colortex2, texel, 0).xy);
-    float handDepth = view.z / MC_HAND_DEPTH - 0.5 / MC_HAND_DEPTH + 0.5;
-    if (materialID == MAT_HAND && abs(handDepth - 0.5) < 0.5) {
-        view.z = handDepth;
-        view = view * 2.0 - 1.0;
-        view = projectionToViewPos(view);
+    vec3 geoNormal = decodeNormal(srTexelFetchLow(colortex1, texel, 0).zw);
+    if (materialID == MAT_HAND) {
+        vec3 projection = view * 2.0 - 1.0;
+        projection.z = decodeHandDepth(coord.z) * 2.0 - 1.0;
+        #if defined TAA || defined HELIAN_SR_JITTER
+            projection.xy -= taaOffset;
+        #endif
+        view = projectionToViewPos(projection);
         #ifndef TEMPORAL_IGNORE_HAND_ANIMATION
             view += view * parallaxOffset / max(dot(geoNormal, -view), 1e-5);
             view -= gbufferModelView[3].xyz;
-            float prevHandAnimationX = uintBitsToFloat(texelFetch(colortex6, ivec2(0, 0), 0).x);
-            float prevHandAnimationY = uintBitsToFloat(texelFetch(colortex6, ivec2(1, 0), 0).x);
-            mat3 xRotation = rotation(vec4(0.0, sin(prevHandAnimationX * 0.5), 0.0, cos(prevHandAnimationX * 0.5)));
-            mat3 yRotation = rotation(vec4(sin(prevHandAnimationY * 0.5), 0.0, 0.0, cos(prevHandAnimationY * 0.5)));
-            view = xRotation * yRotation * view;
             view += gbufferPreviousModelView[3].xyz;
             view -= view * parallaxOffset / max(dot(geoNormal, -view), 1e-5);
         #endif
         view = viewToProjectionPos(view);
-        view.z *= MC_HAND_DEPTH;
         view = view * 0.5 + 0.5;
+        view.z = encodeHandDepth(view.z);
+        #if defined TAA || defined HELIAN_SR_JITTER
+            view.xy += prevTaaOffset;
+        #endif
     }
     else if (coord.z > 0.7) {
         #ifdef LOD
             if (coord.z > 1.0) {
                 view.z -= 1.0;
-                view = projectionToViewPosLod(view * 2.0 - 1.0);
+                vec3 projection = view * 2.0 - 1.0;
+                #if defined TAA || defined HELIAN_SR_JITTER
+                    projection.xy -= taaOffset;
+                #endif
+                view = projectionToViewPosLod(projection);
             } else
         #endif
         {
-            view = projectionToViewPos(view * 2.0 - 1.0);
+            vec3 projection = view * 2.0 - 1.0;
+            #if defined TAA || defined HELIAN_SR_JITTER
+                projection.xy -= taaOffset;
+            #endif
+            view = projectionToViewPos(projection);
         }
         if (coord.z - float(coord.z > 1.0) < 1.0 && materialID != MAT_END_PORTAL) {
             view += view * parallaxOffset / max(dot(geoNormal, -view), 1e-5);
@@ -164,6 +163,9 @@ vec3 calculateVelocity(vec3 coord, ivec2 texel, float materialID, float parallax
             view = prevViewToProjectionPos(view);
         }
         view = view * 0.5 + 0.5;
+        #if defined TAA || defined HELIAN_SR_JITTER
+            view.xy += prevTaaOffset;
+        #endif
     }
     vec3 velocity = view - coord;
     return velocity;
@@ -171,9 +173,10 @@ vec3 calculateVelocity(vec3 coord, ivec2 texel, float materialID, float parallax
 
 float getDepthConfidenceFactor(vec3 coord, vec3 velocity) {
     vec2 prevCoord = coord.st + velocity.xy;
-    float prevDepth = getFarthestPrevDepth(prevCoord);
-    float depthDiffFactor = step(coord.z + velocity.z, prevDepth + 1e-3);
-    return depthDiffFactor;
+    float prevDepth = getClosestPrevDepth(prevCoord);
+    float reprojectedDepth = coord.z + velocity.z;
+    float depthTolerance = 1e-3 + 1e-3 * abs(reprojectedDepth);
+    return float(abs(reprojectedDepth - prevDepth) <= depthTolerance);
 }
 
 float circleOfConfusionRadius(float sampleDepth, float focusDepth) {
@@ -190,6 +193,7 @@ float circleOfConfusionRadius(float sampleDepth, float focusDepth) {
 }
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     float focusDepth = far;
     #if FOCUS_MODE == 0
         const float minFocalLength = max(FOCAL_LENGTH + 0.01, 0.3);
@@ -199,28 +203,14 @@ void main() {
     #endif
 
     ivec2 texel = ivec2(gl_FragCoord.st);
-    vec4 centerData = texelFetch(colortex3, texel, 0);
-    float centerDepth = uintBitsToFloat(textureLod(colortex6, texcoord, 0.0).x);
+    vec4 centerData = srTexelFetchScene(colortex3, texel, 0);
+    float centerDepth = uintBitsToFloat(srTextureLodLow(colortex6, texcoord, 0.0).x);
     float centerCoC = circleOfConfusionRadius(centerDepth, focusDepth);
     float sampleRadius = clamp(abs(centerCoC), 0.0, 1.0);
 
-    #ifdef SHADOW_AND_SKY
-        float weatherData = texelFetch(colortex0, texel, 0).w * 2.5 - 1.5;
-        float weatherLightData = abs(weatherData);
-        if (weatherLightData > 0.3) {
-            float sunlightStrength = 2.0 * weatherLightData - 1.0;
-            float basicSunlight = (1.0 - (1.0 - exp2(-RF_DENSITY * 4.0)) * weatherStrength) * 9.5 * SUNLIGHT_BRIGHTNESS;
-            vec3 weatherLight = sunlightStrength * basicSunlight * sunColor + skyColorUp * (1.0 - 0.75 * (1.0 - exp2(-RF_DENSITY * 4.0)) * weatherStrength);
-            float weatherBlendWeight = clamp(weatherData * 1e+10, 0.0, 1.0) * 0.95 + 0.05;
-            centerData.rgb = mix(centerData.rgb, weatherLight, weatherBlendWeight);
-        }
-    #endif
-
     #ifdef DEPTH_OF_FIELD
+        const mat2 goldenRotate = mat2(cos(2.39996323), sin(2.39996323), -sin(2.39996323), cos(2.39996323));
         float strength = 15.0 * MAX_BLUR_RADIUS;
-        #if SR_ENABLE
-            strength *= SR_RENDER_SCALE_FACTOR;
-        #endif
         vec2 noise = blueNoiseTemporal(texcoord).xy;
         float radius2 = noise.y / COC_SPREAD_SAMPLES;
         float noiseAngle = noise.x * PI * 2.0;
@@ -231,18 +221,18 @@ void main() {
         for (int i = 0; i < COC_SPREAD_SAMPLES; i++) {
             float radius = radius2 * inversesqrt(radius2);
             vec2 sampleCoord = texcoord + texelSize * radius * angle;
-            float sampleDepth = uintBitsToFloat(textureLod(colortex6, sampleCoord, 0.0).x);
+            float sampleDepth = uintBitsToFloat(srTextureLodLow(colortex6, sampleCoord, 0.0).x);
             angle = goldenRotate * angle;
             radius2 += 1.0 / COC_SPREAD_SAMPLES;
             float sampleCoC = clamp(abs(circleOfConfusionRadius(sampleDepth, focusDepth)), 0.0, 1.0);
-            if (sampleCoC > radius && abs(sampleDepth) <= abs(centerDepth)) {
+            if (sampleCoC > radius && sampleDepth <= centerDepth) {
                 sampleRadius = max(sampleRadius, sampleCoC);
                 if (abs(centerCoC) < sampleCoC - radius) {
                     centerCoC = radius - sampleCoC;
                 }
             }
         }
-    #else
+    #elif !defined HELIAN_SR_ACTIVE
         centerData.rgb = clamp(pow(0.005 * centerData.rgb, vec3(1.0 / 2.2)), vec3(0.0), vec3(1.0)) * 10.0;
     #endif
 
@@ -257,19 +247,24 @@ void main() {
     velocity = velocity * clamp(inversesqrt(dot(velocity.st, velocity.st)), 0.0, 1.0);
 
     float blendWeight = 1.0;
-    #ifdef TAA
-        float depthDiffFactor = getDepthConfidenceFactor(closest, velocity);
+    #if defined TAA || defined HELIAN_SR_JITTER
+        vec2 reprojectCoord = closest.st + velocity.st;
+        vec2 historyBorder = texelSize * 2.0;
+        bool historyInBounds = all(greaterThanEqual(reprojectCoord, historyBorder)) &&
+            all(lessThanEqual(reprojectCoord, vec2(1.0) - historyBorder));
 
-        blendWeight *= TAA_HISTORY_WEIGHT - TAA_HISTORY_WEIGHT * min(0.8, 4.5 * pow(dot(velocity.xy, velocity.xy), 0.25)) * step(closest.z, 0.999999);
-        blendWeight *= float(all(lessThan(floatBitsToUint(closest.st + velocity.st), floatBitsToUint(screenEdge))));
-        blendWeight *= depthDiffFactor;
-        #if SR_ENABLE
+        blendWeight *= 0.95 - min(0.7, 4.0 * pow(dot(velocity.xy, velocity.xy), 0.25)) * step(closest.z, 0.999999);
+        if (historyInBounds) {
+            blendWeight *= getDepthConfidenceFactor(closest, velocity);
+        }
+        else {
             blendWeight = 0.0;
-        #endif
+        }
     #endif
 
-    #if SR_ENABLE
-        velocity.st *= upscaleRatio;
+    #ifdef HELIAN_SR_ACTIVE
+        velocity.xy = srTextureLodLow(colortex9, texcoord, 0.0).rg;
+        blendWeight = 0.0;
     #endif
     texBuffer5 = vec4(velocity.st, 0.0, blendWeight);
 }

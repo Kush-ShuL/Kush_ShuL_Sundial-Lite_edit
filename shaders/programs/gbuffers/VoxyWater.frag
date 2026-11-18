@@ -13,7 +13,7 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Gbuffer for Voxy translucent terrain
+//  Gbuffer for Voxy transparent terrain
 //
 
 layout(location = 0) out vec4 gbufferData0;
@@ -21,7 +21,6 @@ layout(location = 1) out vec4 gbufferData1;
 layout(location = 2) out vec4 gbufferData2;
 
 const float PI = 3.1415926535897;
-const mat2 goldenRotate = mat2(cos(2.39996323), sin(2.39996323), -sin(2.39996323), cos(2.39996323));
 
 vec2 taaOffset = vec2(0.0);
 
@@ -29,12 +28,9 @@ uniform sampler2D colortex0;
 uniform sampler2D colortex1;
 uniform sampler2D colortex2;
 
-#if SR_ENABLE
-    vec2 renderScale = floor(SR_RENDER_SCALE_FACTOR * screenSize) * texelSize;
-    vec2 upscaleRatio = screenSize / floor(SR_RENDER_SCALE_FACTOR * screenSize);
-#endif
-
+#define HELIAN_VOXY_FRAGMENT
 #include "/settings/GlobalSettings.glsl"
+#include "/libs/SuperResolution.glsl"
 #include "/libs/GbufferData.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/Water.glsl"
@@ -84,7 +80,12 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     vec3 bitangent = mat3(gbufferModelView) * vec3(0.0, abs(worldNormal.y) - 1.0, worldNormal.y);
     mat3 tbnMatrix = mat3(tangent, bitangent, viewNormal);
 
-    vec3 viewPos = screenToViewPosLod(gl_FragCoord.st * texelSize - 0.5 * taaOffsetVX, gl_FragCoord.z);
+    vec2 lodCoord = gl_FragCoord.st * texelSize;
+    #ifndef HELIAN_SR_ACTIVE
+        lodCoord -= 0.5 * taaOffsetVX;
+    #endif
+    // SR reconstruction already removes its jitter in screenToViewPosLod.
+    vec3 viewPos = screenToViewPosLod(lodCoord, gl_FragCoord.z);
     vec3 mcPos = viewToWorldPos(viewPos) + cameraPosition;
 
     float wetStrength = 0.0;
@@ -110,13 +111,9 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
 
     rawData.normal = vec3(0.0, 0.0, 1.0);
     if (rawData.materialID == MAT_WATER) {
-        #if WATER_TYPE == 0
-            rawData.albedo.rgb = parameters.tinting.rgb;
-            vec3 tangentDir = transpose(tbnMatrix) * viewPos;
-            rawData.normal = waterWave(mcPos / 32.0, tangentDir);
-        #else
-            rawData.albedo.rgb = parameters.sampledColour.rgb;
-        #endif
+        rawData.albedo.rgb = parameters.tinting.rgb;
+        vec3 tangentDir = transpose(tbnMatrix) * viewPos;
+        rawData.normal = waterWave(mcPos / 32.0, tangentDir);
     }
     rawData.normal.xy += rippleNormal.xy * wetStrength;
     rawData.normal = normalize(tbnMatrix * rawData.normal);
@@ -127,8 +124,8 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     float weight = clamp(curveStart - curveStart * exp(NdotV / curveStart - 1.0), 0.0, 1.0);
     weight = max(NdotV, curveStart) - weight;
     rawData.normal = viewDir * weight + edgeNormal * max(0.0, inversesqrt(dot(edgeNormal, edgeNormal) / (1.0 - weight * weight)));
-    float fadeFactor = viewDepthInv * curveStart * gbufferProjection[1].y * screenSize.y;
-    rawData.normal = mix(tbnMatrix[2], rawData.normal, fadeFactor / (fadeFactor + 0.2));
+    float fadeFactor = viewDepthInv * curveStart * gbufferProjection[1].y * srOutputScreenSize.y;
+    rawData.normal = mix(tbnMatrix[2], rawData.normal, fadeFactor / (fadeFactor + 0.3));
 
     packUpGbufferDataSolid(rawData, gbufferData0, gbufferData1, gbufferData2);
 }

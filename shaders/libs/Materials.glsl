@@ -4,3 +4,5 @@
 #define MAT_PARTICLE 3
 #define MAT_END_PORTAL 4
 #define MAT_GRASS 5
+#define MAT_ENTITY_MODEL 6
+#define MAT_FORWARD_MODEL 7

@@ -18,7 +18,7 @@
 
 layout(location = 0) out vec4 shadowColor0;
 
-in vec4 color;              // Will become vec4(worldPos, causticsStrength) when rendering water
+in vec4 color;              // Will become vec4(worldPos, 0.0) when rendering water
 in vec3 worldNormal;
 in vec2 texcoord;
 in vec2 shadowOffset;
@@ -26,9 +26,21 @@ in float distortFixValue;
 
 // #define SHADOW_DISTORTION_FIX
 
+#ifdef RT_ENTITY_GEOMETRY
+    flat in int shadowModelId;
+#elif defined SHADOW_DISTORTION_FIX
+    uniform int entityId;
+#endif
+
 #include "/settings/GlobalSettings.glsl"
+#ifdef HELIAN_RT_SCENE
+    // Iris reads voxelDistance from fragment stages for its reversed shadow frustum.
+    const float voxelDistance = RT_DISTANCE;
+#endif
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
+
+uniform sampler2D gaux1;
 
 const int shadowMapResolution = 2048; // [1024 2048 4096 8192 16384]
 const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
@@ -39,7 +51,7 @@ float waterCaustic(vec3 mcPos, vec3 lightDir) {
 
     #ifdef WATER_CAUSTIC
         vec3 causticPos = mcPos + vec3(1.0, 0.0, 0.5) * frameTimeCounter * WATER_WAVE_SPEED;
-        vec2 causticCoord = causticPos.xz + causticPos.y;
+        vec2 causticCoord = causticPos.xz;
 
         vec3 position = vec3(causticCoord, frameTimeCounter);
 
@@ -57,7 +69,7 @@ float waterCaustic(vec3 mcPos, vec3 lightDir) {
             dist = min(dist, dot(offset, offset));
         }
 
-        causticStrength = clamp(dist * sqrt(dist) * (3.0 - 2.0 * dist) * 0.9 + 0.1, 0.0, 1.0);
+        causticStrength = dist * sqrt(dist) * (3.0 - 2.0 * dist) * 0.9 + 0.1;
     #endif
 
     return causticStrength;
@@ -74,47 +86,59 @@ vec3 shadowCoordToWorldPos(vec3 shadowCoord) {
 }
 
 void main() {
-    #if defined SHADOW_AND_SKY || defined END_FLASH
+    #ifdef SHADOW_AND_SKY
         vec4 albedo = textureLod(gtexture, texcoord, 0.0);
-        albedo *= color;
+        #ifdef RT_ENTITY_GEOMETRY
+            if (shadowModelId == 7003) {
+                // Skin and equipment use cutout coverage; a filtered skin edge
+                // must not punch a light-transmitting patch into the body shadow.
+                if (albedo.a < 0.1) discard;
+                albedo.a = 1.0;
+            } else {
+                albedo.a *= color.a;
+                #ifdef TRANSPARENT_SHADOW
+                    if (albedo.a < 1.0/255.0 || ((shadowOffset.x < -0.5) != (albedo.a < 0.999))) discard;
+                #endif
+            }
+        #endif
         #ifdef COLORWHEEL
             vec2 lmcoord;
             float ao;
             vec4 overlayColor;
             clrwl_computeFragment(albedo, albedo, lmcoord, ao, overlayColor);
-            albedo.rgb = mix(albedo.rgb, overlayColor.rgb, overlayColor.a);
+	        albedo.rgb = mix(albedo.rgb, overlayColor.rgb, overlayColor.a);
         #endif
-
-        vec2 centerTexelOffset = gl_FragCoord.st - realShadowMapResolution * 0.75 - shadowOffset;
-        if (any(greaterThan(abs(centerTexelOffset), vec2(realShadowMapResolution * 0.25))) || fwidth(shadowOffset.x) > 0.0 || albedo.w < max(0.01, alphaTestRef)) discard;
 
         if (shadowOffset.y < -0.5) {
             vec3 mcPos = color.xyz + cameraPosition;
             mcPos.y += 128.0;
             float floorMcHeight = floor(mcPos.y / 2.0);
             float caustic = waterCaustic(mcPos, shadowDirection);
-            albedo = vec4(sqrt(caustic * color.a), mcPos.y * 0.5 - floorMcHeight, 1.0 - floorMcHeight / 255.0, 0.5);
-        }
-        if (shadowOffset.x < -0.5) {
-            albedo.rgb = pow(
-                albedo.rgb * (1.0 - 0.5 * pow2(albedo.w)),
-                vec3(sqrt(albedo.w * 2.2 * 2.2 * 1.5))
-            );
-            albedo = vec4(sqrt(albedo.rgb), 1.0);
+            albedo = vec4(caustic, mcPos.y * 0.5 - floorMcHeight, 1.0 - floorMcHeight / 255.0, 1.0);
         }
 
+        vec2 centerTexelOffset = gl_FragCoord.st - realShadowMapResolution * 0.75 - shadowOffset;
+        if (any(greaterThan(abs(centerTexelOffset), vec2(realShadowMapResolution * 0.25))) || fwidth(shadowOffset.x) > 0.0) discard;
+        #if !defined RT_ENTITY_GEOMETRY || !defined TRANSPARENT_SHADOW
+            if (albedo.w < max(0.001, alphaTestRef)) discard;
+        #endif
+
         #ifdef SHADOW_DISTORTION_FIX
-            vec3 shadowProjPos = vec3(centerTexelOffset / (realShadowMapResolution * 0.25), gl_FragCoord.z * 10.0 - 5.0);
-            vec3 pixelWorldPos = shadowCoordToWorldPos(shadowProjPos);
-            float pixelDistanceToFace = distortFixValue - dot(pixelWorldPos, worldNormal);
-            float NdotL = dot(worldNormal, shadowDirection);
-            float offsetLength = signMul(pixelDistanceToFace / max(1e-5, abs(NdotL)), NdotL);
-            gl_FragDepth = gl_FragCoord.z + offsetLength * shadowProjection[2].z * 0.1;
+            gl_FragDepth = gl_FragCoord.z;
+            // The plane correction can shift narrow player faces behind the receiver at grazing angles.
+            #ifndef RT_ENTITY_GEOMETRY
+            if (entityId != 7003) {
+                vec3 shadowProjPos = vec3(centerTexelOffset / (realShadowMapResolution * 0.25), gl_FragCoord.z * 10.0 - 5.0);
+                vec3 pixelWorldPos = shadowCoordToWorldPos(shadowProjPos);
+                float pixelDistanceToFace = distortFixValue - dot(pixelWorldPos, worldNormal);
+                float NdotL = dot(worldNormal, shadowDirection);
+                float offsetLength = signMul(pixelDistanceToFace / max(1e-5, abs(NdotL)), NdotL);
+                gl_FragDepth += offsetLength * shadowProjection[2].z * 0.1;
+            }
+            #endif
         #endif
         shadowColor0 = albedo;
     #else
         discard;
     #endif
 }
-
-/* DRAWBUFFERS:0 */

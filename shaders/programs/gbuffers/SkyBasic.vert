@@ -28,11 +28,8 @@ void main() {
     }
     gl_Position = ftransform();
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

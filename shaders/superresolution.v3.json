@@ -1,0 +1,51 @@
+{
+  "schema_version": 3,
+  "profiles": {
+    "*": {
+      "jitter": {
+        "enabled": true,
+        "source": "mod"
+      },
+      "upscale": {
+        "enabled": true,
+        "supports_frame_generation_only": true,
+        "internal_format": "rgba16f",
+        "hdr": true,
+        "auto_exposure": true,
+        "motion_jittered": false,
+        "pre_exposure": {
+          "source": "const",
+          "type": "float",
+          "value": 1.0
+        },
+        "trigger": {
+          "type": "AFTER",
+#if defined SR_ENABLE && SR_ENABLE == 1 && SR_SHOULD_APPLY_SCALE == 0
+          "pass": "composite9"
+#else
+          "pass": "composite6"
+#endif
+        },
+        "inputs": {
+          "color": { "enabled": true, "src": "autotex3", "region": [0, 0, -1, -1] },
+          "depth": { "enabled": true, "src": "autotex10", "region": [0, 0, -1, -1] },
+          "motion_vectors": { "enabled": true, "src": "autotex9", "region": [0, 0, -1, -1] }
+#if defined SR_ALGO_DLSSRR && SR_USING_ALGO == SR_ALGO_DLSSRR
+          ,"diffuse_albedo": { "enabled": true, "src": "autotex11", "region": [0, 0, -1, -1] }
+          ,"specular_albedo": { "enabled": true, "src": "autotex12", "region": [0, 0, -1, -1] }
+          ,"normal_roughness": { "enabled": true, "src": "autotex13", "region": [0, 0, -1, -1] }
+          ,"specular_motion_vectors": { "enabled": true, "src": "autotex15", "region": [0, 0, -1, -1] }
+          ,"specular_hit_distance": { "enabled": true, "src": "autotex14", "region": [0, 0, -1, -1] }
+#endif
+        },
+        "outputs": {
+          "upscaled_color": {
+            "enabled": true,
+            "target": ["colortex3", "alttex3"],
+            "region": [0, 0, -2, -2]
+          }
+        }
+      }
+    }
+  }
+}

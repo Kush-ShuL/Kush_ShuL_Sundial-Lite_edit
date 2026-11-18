@@ -13,7 +13,7 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Gbuffer for translucent terrain
+//  Gbuffer for transparent terrain
 //
 
 #if MC_VERSION >= 11700
@@ -32,34 +32,18 @@ flat out int materialID;
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
+#include "/libs/Materials.glsl"
 #include "/libs/PhysicsOcean.glsl"
 
-#if defined PHYSICS_OCEAN && !defined PHYSICS_OCEAN_V3
-    #ifdef PHYSICS_OCEAN_V2
-        in float physics_waviness;
-    #endif
-
+#ifdef PHYSICS_OCEAN
     out vec3 physics_localPosition;
     out float physics_localWaviness;
 #endif
 
 void main() {
-    #ifdef PHYSICS_OCEAN_V3
-        vec4 vertexPos = vec4(physics_oceanVertex(gl_Vertex.xyz), 1.0);
-        viewPos = (gl_ModelViewMatrix * vertexPos).xyz;
-    #elif defined PHYSICS_OCEAN
-        #ifdef PHYSICS_OCEAN_V2
-            // basic value to determine how shallow/far away from the shore the water is
-            physics_localWaviness = physics_waviness;
-            // transform gl_Vertex (since it is the raw mesh, i.e. not transformed yet)
-            float baseWaveHeight = physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_localWaviness, physics_gameTime);
-            float rippleHeight = physics_rippleVertexHeight(gl_Vertex.xz);
-            // pass this to the fragment shader to fetch the texture there for per fragment normals
-            physics_localPosition = vec3(gl_Vertex.x, gl_Vertex.y + baseWaveHeight + rippleHeight, gl_Vertex.z);
-        #else
-            physics_localWaviness = texelFetch(physics_waviness, ivec2(gl_Vertex.xz) - physics_textureOffset, 0).r;
-            physics_localPosition = gl_Vertex.xyz + vec3(0.0, physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_localWaviness, physics_gameTime), 0.0);
-        #endif
+    #ifdef PHYSICS_OCEAN
+        physics_localWaviness = texelFetch(physics_waviness, ivec2(gl_Vertex.xz) - physics_textureOffset, 0).r;
+        physics_localPosition = gl_Vertex.xyz + vec3(0.0, physics_waveHeight(gl_Vertex.xz, PHYSICS_ITERATIONS_OFFSET, physics_localWaviness, physics_gameTime), 0.0);
 
         viewPos = (gl_ModelViewMatrix * vec4(physics_localPosition, 1.0)).xyz;
     #else
@@ -82,11 +66,8 @@ void main() {
         }
     #endif
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
-
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

@@ -16,15 +16,23 @@
 //  Gbuffer for particles, entities and block entities
 //
 
+#if defined IS_IRIS && (defined ENTITIES || defined PARTICLE)
+    #extension GL_ARB_shader_image_load_store : require
+    #define CAPTURE_TEXT_BACKDROP
+    #include "/libs/TextBackdropWrite.glsl"
+#endif
 layout(location = 0) out vec4 gbufferData0;
 layout(location = 1) out vec4 gbufferData1;
 layout(location = 2) out vec4 gbufferData2;
 
+#if MC_VERSION < 11300
+    in mat3 tbnMatrix;
+#endif
+
 in vec4 color;
 in vec4 texlmcoord;
+in vec4 coordRange;
 in vec3 viewPos;
-
-noperspective in vec4 coordRange;
 
 #define ENTITY_TEXTURE_RESOLUTION 16 // [4 8 16 32 64 128 256 512 1024 2048 4096 8192]
 
@@ -32,18 +40,27 @@ noperspective in vec4 coordRange;
     uniform int blockEntityId;
 #endif
 
+#if defined ENTITIES || defined CAPTURE_TEXT_BACKDROP
+    uniform int entityId;
+#endif
+
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 #include "/libs/GbufferData.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/Parallax.glsl"
-
-#if (defined ENTITIES || defined HAND) && RAIN_PUDDLE_ENTITY > 0
-    #define USE_RAIN_PUDDLE
-#endif
-
-#ifdef ENTITY_VERTEX_TBN
-    in mat3 vertexTbnMatrix;
+#ifdef FORWARD_MODEL
+    layout(location = 3) out vec4 litModel;
+    layout(location = 4) out float modelDepth;
+    /*
+    const int colortex10Format = R32F;
+    const int colortex21Format = RGBA16F;
+    */
+    const vec4 colortex10ClearColor = vec4(1.0, 0.0, 0.0, 1.0);
+    const vec4 colortex21ClearColor = vec4(0.0, 0.0, 0.0, 0.0);
+    #ifdef SHADOW_AND_SKY
+        #include "/libs/ShadowCoordinates.glsl"
+    #endif
 #endif
 
 #if defined PARTICLE && defined ENTITY_PARALLAX
@@ -98,46 +115,68 @@ vec2 calcTextureScale(vec2 dCoordDX, vec2 dCoordDY, vec3 position) {
     vec3 bitangentHelper = dPosDY * dCoordDX.y - dPosDX * dCoordDY.y;
     vec3 bitangent = cross(bitangentHelper, normal);
 
-    float tangentLen = dot(tangent, tangent);
-    tangentLen = inversesqrt(tangentLen + float(tangentLen == 0.0));
-    float bitangentLen = dot(bitangent, bitangent);
-    bitangentLen = inversesqrt(bitangentLen + float(bitangentLen == 0.0));
+    float tangentLen = inversesqrt(dot(tangent, tangent));
+    float bitangentLen = inversesqrt(dot(bitangent, bitangent));
 
     vec2 textureScale = vec2(tangentLen * dot(tangentHelper, tangentHelper), bitangentLen * dot(bitangentHelper, bitangentHelper));
 
     return textureScale;
 }
 
+mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 textureScale) {
+    vec3 dPosDX = dFdx(position);
+    vec3 dPosDY = dFdy(position);
+
+    vec3 normal = cross(dPosDX, dPosDY);
+
+    vec3 tangentHelper = dPosDY * dCoordDX.x - dPosDX * dCoordDY.x;
+    vec3 tangent = cross(tangentHelper, normal);
+
+    vec3 bitangentHelper = dPosDY * dCoordDX.y - dPosDX * dCoordDY.y;
+    vec3 bitangent = cross(bitangentHelper, normal);
+
+    if (min(dot(tangent, tangent), dot(bitangent, bitangent)) < 1e-30) {
+        vec3 n = normalize(normal);
+        vec3 t = normalize(cross(abs(n.y) < 0.99 ? vec3(0,1,0) : vec3(1,0,0), n));
+        textureScale = vec2(1.0);
+        return mat3(t, cross(n, t), n);
+    }
+    float tangentLen = inversesqrt(dot(tangent, tangent));
+    float bitangentLen = inversesqrt(dot(bitangent, bitangent));
+    textureScale = vec2(tangentLen * dot(tangentHelper, tangentHelper), bitangentLen * dot(bitangentHelper, bitangentHelper));
+
+    return mat3(tangent * tangentLen, bitangent * bitangentLen, normalize(normal));
+}
+
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
+    #ifdef FORWARD_MODEL
+        // deferred11 marks solid first-person geometry before Iris draws translucent entities.
+        if (uintBitsToFloat(srTexelFetchLow(colortex6,ivec2(gl_FragCoord.xy),0).r)>1.0) discard;
+    #endif
     GbufferData rawData;
 
     vec2 texcoord = texlmcoord.st;
     vec2 texGradX = dFdx(texcoord);
     vec2 texGradY = dFdy(texcoord);
+    #ifdef CAPTURE_TEXT_BACKDROP
+        ivec2 atlas=textureSize(gtexture,0);
+        bool noUV=dot(abs(texGradX)+abs(texGradY),vec2(1.0))<1e-6;
+        bool whitePixel=all(equal(atlas,ivec2(1))) && noUV;
+        bool backdrop=entityId==7004 && (noUV ||
+            (all(equal(atlas,ivec2(8))) && all(greaterThan(texture(gtexture,texcoord),vec4(0.998)))));
+        #ifdef FORWARD_MODEL
+            // Iris binds its 1x1 white texture for TEXT_BG. This vertex
+            // format does not always carry the text_display entity ID.
+            backdrop=backdrop || (whitePixel && color.a<1.0);
+        #endif
+        if (backdrop && captureTextBackdrop(color)) discard;
+    #endif
     vec2 textureScale;
-    #if !defined ENTITY_VERTEX_TBN || defined PARTICLE
+    #if MC_VERSION >= 11300
         mat3 tbnMatrix = calcTbnMatrix(texGradX, texGradY, viewPos.xyz, textureScale);
     #else
         textureScale = calcTextureScale(texGradX, texGradY, viewPos.xyz);
-        // Gram-Schmidt process fron learnOpenGL
-        vec3 T = vertexTbnMatrix[0];
-        float TL = dot(T, T);
-        T *= inversesqrt(TL + float(TL == 0.0));
-        vec3 N = vertexTbnMatrix[2];
-        float NL = dot(N, N);
-        N *= inversesqrt(NL + float(NL == 0.0));
-        // re-orthogonalize T with respect to N
-        T = T - dot(T, N) * N;
-        TL = dot(T, T);
-        T *= inversesqrt(TL + float(TL == 0.0));
-        // then retrieve perpendicular vector B with the cross product of T and N
-        vec3 B = cross(T, N);
-
-        mat3 tbnMatrix = mat3(T, B * signI(dot(B, vertexTbnMatrix[1])), N);
-    #endif
-    #if SR_ENABLE
-        texGradX *= renderScale.x;
-        texGradY *= renderScale.y;
     #endif
     float viewDepthInv = inversesqrt(dot(viewPos.xyz, viewPos.xyz));
     vec3 viewDir = viewPos.xyz * (-viewDepthInv);
@@ -152,13 +191,32 @@ void main() {
     #ifdef PARTICLE
         rawData.materialID = MAT_PARTICLE;
     #endif
+    #ifdef ENTITIES
+        rawData.materialID = MAT_ENTITY_MODEL;
+    #endif
     rawData.parallaxOffset = 0.0;
     rawData.depth = 0.0;
+
+    #if defined FORWARD_MODEL && defined ENTITIES
+        // Iris TEXT_BG has position, vertex colour and lightmap, but no glyph
+        // texture. Do not feed an unbound material atlas into this layer.
+        if (entityId==7004 && dot(abs(texGradX)+abs(texGradY),vec2(1.0))<1e-6) {
+            if (color.a<1.0/255.0) discard;
+            rawData.albedo=color;
+            rawData.materialID=MAT_FORWARD_MODEL;
+            rawData.smoothness=0.0; rawData.metalness=0.0;
+            rawData.porosity=0.0; rawData.emissive=0.0;
+            litModel=vec4(pow(color.rgb,vec3(2.2))*color.a,color.a);
+            modelDepth=gl_FragCoord.z;
+            packUpGbufferDataSolid(rawData,gbufferData0,gbufferData1,gbufferData2);
+            return;
+        }
+    #endif
 
     #ifdef END_PORTAL
         if (blockEntityId == 8193) {
             vec3 worldDir = -mat3(gbufferModelViewInverse) * viewDir;
-            vec3 worldDirAbs = abs(worldDir);
+	        vec3 worldDirAbs = abs(worldDir);
             vec3 samplePartAbs = step(vec3(max(worldDirAbs.x, max(worldDirAbs.y, worldDirAbs.z))), worldDirAbs);
             vec3 samplePart = samplePartAbs * signI(worldDir);
             float intersection = 1.0 / dot(samplePartAbs, worldDirAbs);
@@ -190,7 +248,7 @@ void main() {
             #ifdef BEACON
                 if (color.w < 0.999) discard;
             #endif
-            #ifdef ENTITIES
+            #if defined ENTITIES && !defined FORWARD_MODEL
                 if (dot(color.rgb, vec3(1.0)) < 0.001 && abs(color.w - 0.5) < 0.49) discard;
             #endif
             useTexAlbedo = true;
@@ -198,8 +256,12 @@ void main() {
         #ifdef ENTITIES
             else {
                 useTexAlbedo = abs(albedoData.w - 0.5) > 0.499;
-                albedoData.w = clamp(albedoData.w + float(!useTexAlbedo), 0.0, 1.0);
             }
+        #endif
+        #ifdef ENTITIES
+            // Text-display backgrounds have no glyph UV. Their vertex colour
+            // (including zero or fractional alpha) is the entire material.
+            if (entityId == 7004 && noCoord) useTexAlbedo = false;
         #endif
         #ifdef PARTICLE
             if (noCoord) {
@@ -210,12 +272,11 @@ void main() {
         vec2 albedoTexSize = vec2(textureSize(gtexture, 0));
         vec2 albedoTexelSize = 1.0 / albedoTexSize;
         vec4 fixedCoordRange = coordRange;
-        if (fwidth(coordRange.x) + fwidth(coordRange.y) > 1e-7) {
+        if (fwidth(coordRange.x) + fwidth(coordRange.y) > 1e-6) {
             fixedCoordRange = vec4(0.0, 0.0, 1.0, 1.0);
         }
         float parallaxScale = ENTITY_TEXTURE_RESOLUTION / max(textureScale.x * albedoTexSize.x, textureScale.y * albedoTexSize.y);
-        textureScale *= max(parallaxScale, 0.0);
-        vec2 pixelScale = albedoTexSize * textureScale;
+        vec2 pixelScale = albedoTexSize * textureScale * parallaxScale;
         vec2 quadSize = 1.0 / fixedCoordRange.zw;
         vec3 anisotropicParam = anisotropicOffsetLod(albedoTexSize, albedoTexelSize, texGradX, texGradY, quadSize);
         #if (defined ENTITY_PARALLAX && defined PARALLAX) || ANISOTROPIC_FILTERING_QUALITY > 0
@@ -223,12 +284,14 @@ void main() {
                 #ifdef PARALLAX
                     float parallaxOffset = 0.0;
                     vec3 parallaxTexNormal = vec3(0.0, 0.0, 1.0);
+                    vec3 textureViewer = -viewDir * tbnMatrix;
+                    textureViewer.xy *= textureScale * parallaxScale;
                     #ifdef VOXEL_PARALLAX
                         texcoord = perPixelParallax(
-                            texcoord, viewPos.xyz, tbnMatrix, textureScale, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset
+                            texcoord, textureViewer, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset
                         );
                     #else
-                        texcoord = calculateParallax(texcoord, viewPos.xyz, tbnMatrix, textureScale, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);
+                        texcoord = calculateParallax(texcoord, textureViewer, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);
                     #endif
                     rawData.parallaxOffset = clamp(parallaxOffset * parallaxScale, 0.0, 1.0);
                 #endif
@@ -238,7 +301,7 @@ void main() {
         #if ANISOTROPIC_FILTERING_QUALITY > 0 && !defined PARTICLE && !defined MC_ANISOTROPIC_FILTERING
             vec4 texAlbedo = anisotropicFilter(texcoord, anisotropicParam.xy, anisotropicParam.z, fixedCoordRange, quadSize);
         #else
-            vec4 texAlbedo = textureGrad(gtexture, texcoord, texGradX, texGradY);
+            vec4 texAlbedo = srTextureGradMaterial(gtexture, texcoord, texGradX, texGradY);
         #endif
         #ifdef MC_NORMAL_MAP
             anisotropicParam.z -= 1.0;
@@ -248,15 +311,28 @@ void main() {
             #endif
         #endif
         albedoData *= mix(vec4(1.0), texAlbedo, vec4(float(useTexAlbedo)));
+        #ifdef ENTITIES
+            // Only text-display backgrounds use entity vertex alpha as opacity.
+            // Equipment, item displays and other textured entity models use the
+            // model texture's own alpha.
+            #ifndef FORWARD_MODEL
+            if (useTexAlbedo && entityId != 7004 && entityId != 7005) {
+                albedoData.a = texAlbedo.a;
+            }
+            #endif
+        #endif
         #ifdef COLORWHEEL
             float ao;
             vec4 overlayColor;
             clrwl_computeFragment(albedoData, albedoData, rawData.lightmap, ao, overlayColor);
             albedoData.rgb = mix(albedoData.rgb, overlayColor.rgb, overlayColor.a);
-            rawData.lightmap = clamp(rawData.lightmap * 16.0 / 15.0 - 0.5 / 15.0, 0.0, 1.0);
         #endif
 
-        if (albedoData.w < max(0.001, alphaTestRef)) discard;
+        #ifdef FORWARD_MODEL
+            if (albedoData.a < 1.0 / 255.0) discard;
+        #else
+            if (albedoData.w < max(0.001, alphaTestRef)) discard;
+        #endif
 
         rawData.albedo = albedoData;
         rawData.smoothness = 0.0;
@@ -265,7 +341,7 @@ void main() {
         rawData.emissive = 0.0;
 
         #ifdef MC_SPECULAR_MAP
-            vec4 specularData = texture(specular, texcoord);
+            vec4 specularData = srTextureGradMaterial(specular, texcoord, texGradX, texGradY);
             SPECULAR_FORMAT(rawData, specularData);
         #endif
 
@@ -281,7 +357,7 @@ void main() {
             rawData.porosity = 0.0;
         #endif
 
-        #ifdef EMISSIVE
+        #if (defined EMISSIVE) && (defined HARDCODED_EMISSIVE)
             rawData.emissive += step(rawData.emissive, 1e-3);
         #endif
 
@@ -295,11 +371,14 @@ void main() {
             // Physics mod snow support
             rawData.parallaxOffset = 0.0;
             rawData.smoothness = 0.5;
+            #ifdef ENTITIES
+                if (entityId == 7004 || entityId == 7005) rawData.smoothness = 0.0;
+            #endif
             rawData.metalness = 0.0;
             rawData.porosity = 0.5;
             rawData.emissive = 0.0;
             #ifdef ENTITIES
-                if (!useTexAlbedo) {
+                if (!useTexAlbedo && entityId != 7004 && entityId != 7005) {
                     rawData.albedo.rgb = vec3(1.0);
                     rawData.emissive = 1.0;
                 }
@@ -383,15 +462,39 @@ void main() {
                 rawData.normal = viewDir * weight + edgeNormal * max(0.0, inversesqrt(dot(edgeNormal, edgeNormal) / (1.0 - weight * weight)));
             }
         }
-        #ifdef IRIS_INLINE_GLINT
-            if (mc_hasGlint()) {
-                vec3 glint = mc_sampleGlint();
-                rawData.albedo.rgb += glint * glint; // this is the specific blending glint uses
-            }
-        #endif
     }
 
+    #ifdef FORWARD_MODEL
+        rawData.materialID = MAT_FORWARD_MODEL;
+        vec3 pos = viewToWorldPos(viewPos);
+        float block = rawData.lightmap.x;
+        #ifdef IS_IRIS
+            block = max(block, heldBlockLightValue / 15.0 * max(0.0, 1.0 - length(pos + relativeEyePosition) / 15.0));
+        #endif
+        float fade = VANILLA_BLOCK_LIGHT_FADE;
+        vec3 light = commonLightColor * pow2(1.0 / (fade - fade*fade/(1.0+fade)*block) - 1.0/fade);
+        #ifdef SHADOW_AND_SKY
+            vec3 n = normalize(mat3(gbufferModelViewInverse) * rawData.normal);
+            float sky = pow2(rawData.lightmap.y);
+            vec3 sc = worldPosToShadowCoord(pos + n * 0.04);
+            float visibility = sky;
+            if (all(lessThan(abs(sc-vec3(0.75,0.75,0.5)),vec3(0.249,0.249,0.5)))) visibility = textureLod(shadowtex0, sc - vec3(0,0,4e-5), 0.0);
+            light += BASICLIGHT_WORLD0 + sky * (ENVIROMENT_BRIGHTNESS * (0.65 + 0.25*n.y) * sunColor)
+                   + sunColor * SUNLIGHT_BRIGHTNESS * 8.0 * max(dot(n,shadowDirection),0.0) * visibility * clamp(rawData.lightmap.y*10.0,0.0,1.0);
+        #elif defined THE_END
+            light += vec3(END_FOG_COLOR_R, END_FOG_COLOR_G, END_FOG_COLOR_B) * END_ENVIROMENT_BRIGHTNESS;
+        #else
+            light += vec3(0.1);
+        #endif
+        litModel = vec4(pow(rawData.albedo.rgb, vec3(2.2)) * (light + rawData.emissive * PBR_BRIGHTNESS * PI), rawData.albedo.a);
+        litModel.rgb *= litModel.a;
+        modelDepth = gl_FragCoord.z;
+    #endif
     packUpGbufferDataSolid(rawData, gbufferData0, gbufferData1, gbufferData2);
 }
 
+#ifdef FORWARD_MODEL
+/* RENDERTARGETS: 0,1,2,21,10 */
+#else
 /* DRAWBUFFERS:012 */
+#endif

@@ -28,12 +28,9 @@ uniform sampler2D colortex0;
 uniform sampler2D colortex1;
 uniform sampler2D colortex2;
 
-#if SR_ENABLE
-    vec2 renderScale = floor(SR_RENDER_SCALE_FACTOR * screenSize) * texelSize;
-    vec2 upscaleRatio = screenSize / floor(SR_RENDER_SCALE_FACTOR * screenSize);
-#endif
-
+#define HELIAN_VOXY_FRAGMENT
 #include "/settings/GlobalSettings.glsl"
+#include "/libs/SuperResolution.glsl"
 #include "/libs/GbufferData.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/Parallax.glsl"
@@ -103,7 +100,12 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     vec3 bitangent = mat3(gbufferModelView) * vec3(0.0, abs(worldNormal.y) - 1.0, worldNormal.y);
     mat3 tbnMatrix = mat3(tangent, bitangent, viewNormal);
 
-    vec3 viewPos = screenToViewPosLod(gl_FragCoord.st * texelSize - 0.5 * taaOffsetVX, gl_FragCoord.z);
+    vec2 lodCoord = gl_FragCoord.st * texelSize;
+    #ifndef HELIAN_SR_ACTIVE
+        lodCoord -= 0.5 * taaOffsetVX;
+    #endif
+    // SR reconstruction already removes its jitter in screenToViewPosLod.
+    vec3 viewPos = screenToViewPosLod(lodCoord, gl_FragCoord.z);
     vec3 mcPos = viewToWorldPos(viewPos) + cameraPosition;
 
     float wetStrength = 0.0;

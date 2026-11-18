@@ -1,5 +1,7 @@
 #version 330 compatibility
 
+#define HELIAN_SR_POST
+
 const float shadowDistanceRenderMul = 1.0;
 const bool shadowtex0Mipmap = true;
 const bool shadowcolor0Mipmap = true;

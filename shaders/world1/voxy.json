@@ -1,8 +1,19 @@
+#include "/libs/SuperResolutionSettings.glsl"
 {
     "version": 1,
+    #ifdef HELIAN_SR_ACTIVE
+    "renderScale": [SR_RENDER_SCALE_FACTOR, SR_RENDER_SCALE_FACTOR],
+    "useViewportDims": true,
+    #endif
     "uniforms": [
-        "far",
+        #ifdef HELIAN_SR_ACTIVE
+        "SRScaledViewportSize",
+        "SROriginalViewportSize",
+        "SRJitterOffset",
+        "SRPreviousJitterOffset",
+        #endif
         "frameCounter",
+        "far",
         "rainStrength",
         "rainyStrength",
         "weatherStrength",
@@ -21,17 +32,7 @@
         "vxProjInv",
         "vxProjPrev",
         "vxRenderDistance"
-    #if SR_ENABLE
-        ,"SRJitterOffset"
-        ,"SRScaledViewportSize"
     ],
-    "renderScale":[SR_RENDER_SCALE_FACTOR],
-    "useViewportDims": true,
-    "taaOffset": "{return SRJitterOffset * 2.0 * vec2(1.0, -1.0) / SRScaledViewportSize;}",
-    #else
-    ],
-    "taaOffset": "{return taaOffsetVX;}",
-    #endif
     "samplers": {
         "gtexture": "sampler2D",
         "normals": "sampler2D",
@@ -46,6 +47,17 @@
         "-1": "off"
     },
     "excludeLodsFromVanillaDepth": true,
+    "taaOffset": "{
+        #ifdef HELIAN_SR_ACTIVE
+            #ifdef HELIAN_SR_JITTER
+                return 2.0 * SRJitterOffset / SRScaledViewportSize;
+            #else
+                return vec2(0.0);
+            #endif
+        #else
+            return taaOffsetVX;
+        #endif
+    }",
     "opaqueDrawBuffers": [0, 1, 2],
     "translucentDrawBuffers": [16, 17, 18]
 }

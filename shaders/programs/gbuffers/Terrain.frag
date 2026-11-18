@@ -25,8 +25,8 @@ layout(location = 2) out vec4 gbufferData2;
 in vec4 texlmcoord;
 in vec3 color;
 in vec3 viewPos;
+in vec4 coordRange;
 
-noperspective in vec4 coordRange;
 flat in int material;
 
 #include "/settings/GlobalSettings.glsl"
@@ -36,22 +36,39 @@ flat in int material;
 #include "/libs/Water.glsl"
 #include "/libs/Parallax.glsl"
 
+mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 textureScale) {
+    vec3 dPosDX = dFdx(position);
+    vec3 dPosDY = dFdy(position);
+
+    vec3 normal = cross(dPosDX, dPosDY);
+
+    vec3 tangentHelper = dPosDY * dCoordDX.x - dPosDX * dCoordDY.x;
+    vec3 tangent = cross(tangentHelper, normal);
+
+    vec3 bitangentHelper = dPosDY * dCoordDX.y - dPosDX * dCoordDY.y;
+    vec3 bitangent = cross(bitangentHelper, normal);
+
+    float tangentLen = inversesqrt(dot(tangent, tangent));
+    float bitangentLen = inversesqrt(dot(bitangent, bitangent));
+
+    textureScale = vec2(tangentLen * dot(tangentHelper, tangentHelper), bitangentLen * dot(bitangentHelper, bitangentHelper));
+
+    return mat3(tangent * tangentLen, bitangent * bitangentLen, normalize(normal));
+}
+
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     GbufferData rawData;
 
     vec2 texGradX = dFdx(texlmcoord.st);
     vec2 texGradY = dFdy(texlmcoord.st);
     vec2 textureScale;
-    mat3 tbnMatrix = calcTbnMatrix(texGradX, texGradY, viewPos, textureScale);
-    #if SR_ENABLE
-        texGradX *= renderScale.x;
-        texGradY *= renderScale.y;
-    #endif
+    mat3 tbnMatrix = calcTbnMatrix(texGradX, texGradY, viewPos.xyz, textureScale);
 
     vec2 albedoTexSize = vec2(textureSize(gtexture, 0));
     vec2 albedoTexelSize = 1.0 / albedoTexSize;
     vec4 fixedCoordRange = coordRange;
-    if (fwidth(coordRange.x) + fwidth(coordRange.y) > 1e-7) {
+    if (fwidth(coordRange.x) + fwidth(coordRange.y) > 1e-6) {
         fixedCoordRange = vec4(0.0, 0.0, 1.0, 1.0);
     }
     vec2 pixelScale = albedoTexSize * textureScale;
@@ -62,14 +79,16 @@ void main() {
     vec3 anisotropicParam = anisotropicOffsetLod(albedoTexSize, albedoTexelSize, texGradX, texGradY, quadSize);
     #ifdef PARALLAX
         vec3 parallaxTexNormal = vec3(0.0, 0.0, 1.0);
-        #if WATER_TYPE == 0 && defined CAULDRON_WAVE && MC_VERSION <= 12111
+        #if WATER_TYPE == 0 && defined CAULDRON_WAVE
             if (material != 8192)
         #endif
         {
+            vec3 textureViewer = viewPos * tbnMatrix;
+            textureViewer.xy *= textureScale;
             #ifdef VOXEL_PARALLAX
-                texcoord = perPixelParallax(texcoord, viewPos, tbnMatrix, textureScale, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset);
+                texcoord = perPixelParallax(texcoord, textureViewer, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset);
             #else
-                texcoord = calculateParallax(texcoord, viewPos, tbnMatrix, textureScale, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);
+                texcoord = calculateParallax(texcoord, textureViewer, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);
             #endif
         }
     #endif
@@ -77,7 +96,7 @@ void main() {
     #if ANISOTROPIC_FILTERING_QUALITY > 0 && !defined MC_ANISOTROPIC_FILTERING
         vec4 albedoData = anisotropicFilter(texcoord, anisotropicParam.xy, anisotropicParam.z, fixedCoordRange, quadSize);
     #else
-        vec4 albedoData = textureGrad(gtexture, texcoord, texGradX, texGradY);
+        vec4 albedoData = srTextureGradMaterial(gtexture, texcoord, texGradX, texGradY);
     #endif
     if (albedoData.w < alphaTestRef) discard;
 
@@ -142,7 +161,7 @@ void main() {
         rawData.emissive += hardcodedEmissive * clamp(1.0 - rawData.emissive * 1e+3, 0.0, 1.0);
     #endif
     bool isCauldronWater = material == 8192;
-    #if MC_VERSION >= 260100
+    #if MC_VERSION > 12111
         isCauldronWater = false;
     #endif
     rawData.smoothness += float(rawData.smoothness < 1e-3 && isCauldronWater);
@@ -177,17 +196,12 @@ void main() {
         float porosityDarkness = porosity * outdoor * rainyStrength;
         rawData.albedo.rgb = pow(rawData.albedo.rgb, vec3(1.0 + porosityDarkness)) * (1.0 - 0.2 * porosityDarkness);
 
-        vec3 worldGeoNormal = mat3(gbufferModelViewInverse) * tbnMatrix[2];
-        if (isCauldronWater) {
-            wetStrength = outdoor * clamp(abs(worldGeoNormal.y) * 10.0 - 0.1, 0.0, 1.0);
-        }
-        else {
-            #if RAIN_PUDDLE == 1
-                wetStrength = (1.0 - rawData.metalness) * clamp(worldGeoNormal.y * 10.0 - 0.1, 0.0, 1.0) * outdoor * rainyStrength * (1.0 - porosity);
-            #elif RAIN_PUDDLE == 2
-                wetStrength = groundWetStrength(worldPos, worldGeoNormal.y, rawData.metalness, porosity, outdoor);
-            #endif
-        }
+        vec3 worldNormal = mat3(gbufferModelViewInverse) * rawData.geoNormal;
+        #if RAIN_PUDDLE == 1
+            wetStrength = (1.0 - rawData.metalness) * clamp(worldNormal.y * 10.0 - 0.1, 0.0, 1.0) * outdoor * rainyStrength * (1.0 - porosity);
+        #elif RAIN_PUDDLE == 2
+            wetStrength = groundWetStrength(worldPos, worldNormal.y, rawData.metalness, porosity, outdoor);
+        #endif
         rawData.smoothness += (1.0 - rawData.smoothness) * wetStrength;
 
         #ifdef RAIN_RIPPLES
@@ -266,29 +280,6 @@ void main() {
         weight = max(NdotV, curveStart) - weight;
         rawData.normal = viewDir * weight + edgeNormal * max(0.0, inversesqrt(dot(edgeNormal, edgeNormal) / (1.0 - weight * weight)));
     }
-    #ifdef DIRECTIONAL_LIGHT_LEVEL
-        vec3 dPosDX = dFdx(viewPos);
-        vec3 dPosDY = dFdy(viewPos);
-        vec3 normal = cross(dPosDX, dPosDY);
-        vec2 dLightLevelDX = dFdx(rawData.lightmap);
-        vec2 dLightLevelDY = dFdy(rawData.lightmap);
-
-        vec3 blockLightDirHelper = dPosDY * dLightLevelDX.x - dPosDX * dLightLevelDY.x;
-        float blockLightDirHelperLen = dot(blockLightDirHelper, blockLightDirHelper);
-        if (blockLightDirHelperLen > 0.0) {
-            vec3 blockLightDir = cross(blockLightDirHelper, normal) / blockLightDirHelperLen;
-            rawData.lightmap.x += dot(blockLightDir, rawData.normal) * DIRECTIONAL_BLOCK_LIGHT_STRENGTH * 10.0 / dot(blockLightDir, blockLightDir) * (rawData.lightmap.x - rawData.lightmap.x * rawData.lightmap.x);
-            rawData.lightmap.x = clamp(rawData.lightmap.x, 0.0, 1.0);
-        }
-
-        vec3 skyLightDirHelper = dPosDY * dLightLevelDX.y - dPosDX * dLightLevelDY.y;
-        float skyLightDirHelperLen = dot(skyLightDirHelper, skyLightDirHelper);
-        if (skyLightDirHelperLen > 0.0) {
-            vec3 skyLightDir = cross(skyLightDirHelper, normal) / skyLightDirHelperLen;
-            rawData.lightmap.y += dot(skyLightDir, rawData.normal) * DIRECTIONAL_SKY_LIGHT_STRENGTH * 10.0 / dot(skyLightDir, skyLightDir) * (rawData.lightmap.y - rawData.lightmap.y * rawData.lightmap.y);
-            rawData.lightmap.y = clamp(rawData.lightmap.y, 0.0, 1.0);
-        }
-    #endif
     rawData.lightmap =
         clamp(rawData.lightmap + blueNoiseTemporal(gl_FragCoord.st * texelSize).xy * 2.0 / 255.0 - 1.0 / 255.0, 0.0, 1.0) *
         clamp(rawData.lightmap * 500.0, 0.0, 1.0);

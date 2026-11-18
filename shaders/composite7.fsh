@@ -1,5 +1,5 @@
 #version 330 compatibility
 
-#define SHADOW_AND_SKY
+#define HELIAN_SR_POST
 
 #include "/programs/composite/Composite7.frag"

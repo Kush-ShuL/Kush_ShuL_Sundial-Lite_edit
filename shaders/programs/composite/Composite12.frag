@@ -13,41 +13,62 @@
 //  https://github.com/GeForceLegend/Sundial-Lite
 //  https://www.gnu.org/licenses/gpl-3.0.en.html
 //
-//  Bloom stage 3: blur in y axis
+//  Bloom stage 3: blur in y axis; Chromatic dispersion
 //
 
-layout(location = 0) out vec4 texBuffer4;
+layout(location = 0) out vec4 texBuffer3;
+layout(location = 1) out vec4 texBuffer4;
 
 in vec2 texcoord;
+
+#define CHROMATIC_DISPERSION_R 0.0 // [0.0 0.001 0.002 0.003 0.004 0.005 0.006 0.008 0.01 0.012 0.016 0.02 0.024 0.028 0.032 0.036 0.04 0.045 0.05 0.055 0.06 0.07 0.08 0.09 0.1 0.11 0.12 0.15 0.2 0.25 0.3]
+#define CHROMATIC_DISPERSION_G 0.0 // [0.0 0.001 0.002 0.003 0.004 0.005 0.006 0.008 0.01 0.012 0.016 0.02 0.024 0.028 0.032 0.036 0.04 0.045 0.05 0.055 0.06 0.07 0.08 0.09 0.1 0.11 0.12 0.15 0.2 0.25 0.3]
+#define CHROMATIC_DISPERSION_B 0.0 // [0.0 0.001 0.002 0.003 0.004 0.005 0.006 0.008 0.01 0.012 0.016 0.02 0.024 0.028 0.032 0.036 0.04 0.045 0.05 0.055 0.06 0.07 0.08 0.09 0.1 0.11 0.12 0.15 0.2 0.25 0.3]
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 
 vec3 sampleBloomY(vec2 coord) {
     vec2 offset = uintBitsToFloat(floatBitsToUint(1.0 - coord) & 0x7F800000u);
-    if (offset.x != offset.y) {
-        discard;
-    }
-    ivec2 texel = ivec2(coord * screenSize);
-    int maxTexelY = int(round(screenSize.y * (1.0 - offset.y))) - 1;
-    int minTexelY = int(round(screenSize.y * (1.0 - 2.0 * offset.y)));
+    vec3 result = vec3(0.0);
+    if (offset.x == offset.y) {
+        ivec2 texel = ivec2(coord * screenSize);
+        int maxTexelY = int(floor(screenSize.y * (1.0 - offset.y)));
+        int minTexelY = int(ceil(screenSize.y * (1.0 - 2.0 * offset.y)));
 
-    const float weights[5] = float[5](0.27343750, 0.21875000, 0.10937500, 0.03125000, 0.00390625);
-    vec3 totalColor = texelFetch(colortex4, texel, 0).rgb * weights[0];
-    ivec2 sampleTexel0 = texel;
-    ivec2 sampleTexel1 = texel;
+        const float weights[5] = float[5](0.27343750, 0.21875000, 0.10937500, 0.03125000, 0.00390625);
+        vec3 totalColor = srTexelFetchScene(colortex4, texel, 0).rgb * weights[0];
+        ivec2 sampleTexel0 = texel;
+        ivec2 sampleTexel1 = texel;
 
-    for (int i = 1; i < 5; i++) {
-        sampleTexel0.y = min(maxTexelY, sampleTexel0.y + 1);
-        sampleTexel1.y = max(minTexelY, sampleTexel1.y - 1);
-        totalColor += (texelFetch(colortex4, sampleTexel0, 0).rgb + texelFetch(colortex4, sampleTexel1, 0).rgb) * weights[i];
+        for (int i = 1; i < 5; i++) {
+            sampleTexel0.y = min(maxTexelY, sampleTexel0.y + 1);
+            sampleTexel1.y = max(minTexelY, sampleTexel1.y - 1);
+            totalColor += (srTexelFetchScene(colortex4, sampleTexel0, 0).rgb + srTexelFetchScene(colortex4, sampleTexel1, 0).rgb) * weights[i];
+        }
+        result = totalColor;
     }
-    return totalColor;
+    return result;
 }
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
+    const vec3 dispersion = vec3(CHROMATIC_DISPERSION_R, CHROMATIC_DISPERSION_G, CHROMATIC_DISPERSION_B);
+    if (dispersion.r == dispersion.g && dispersion.g == dispersion.b) {
+        vec2 colorCoord = texcoord * (1.0 - dispersion.r) + vec2(0.5) * dispersion.r;
+        texBuffer3 = vec4(srTextureLodScene(colortex3, colorCoord, 0.0).rgb, 1.0);
+    }
+    else {
+        texBuffer3 = vec4(
+            srTextureLodScene(colortex3, texcoord * (1.0 - dispersion.r) + vec2(0.5) * dispersion.r, 0.0).r,
+            srTextureLodScene(colortex3, texcoord * (1.0 - dispersion.g) + vec2(0.5) * dispersion.g, 0.0).g,
+            srTextureLodScene(colortex3, texcoord * (1.0 - dispersion.b) + vec2(0.5) * dispersion.b, 0.0).b,
+            1.0
+        );
+    }
+
     vec3 bloomColor = sampleBloomY(texcoord);
     texBuffer4 = vec4(pow(bloomColor, vec3(1.0 / 2.2)), 1.0);
 }
 
-/* DRAWBUFFERS:4 */
+/* DRAWBUFFERS:34 */

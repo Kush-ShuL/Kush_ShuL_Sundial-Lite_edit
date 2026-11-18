@@ -16,23 +16,29 @@
 //  DoF stage 1: Prepare depth texture for DOF
 //
 
+#extension GL_ARB_gpu_shader5 : enable
+
 layout(location = 0) out uint texBuffer6;
 
 in vec2 texcoord;
 
+// #define PARALLAX_DOF
 #define DOF_DEPTH_TEXTURE depthtex1 // [depthtex0 depthtex1]
 
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
+#include "/libs/Common.glsl"
 #include "/libs/GbufferData.glsl"
+#include "/libs/SuperResolutionPrepare.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     ivec2 texel = ivec2(gl_FragCoord.st);
-    float screenDepth = textureLod(DOF_DEPTH_TEXTURE, texcoord, 0.0).x;
-    float materialID = texelFetch(colortex0, texel, 0).z;
-    bool isHand = abs(materialID * 255.0 - MAT_HAND) < 0.4;
+    float screenDepth = srTextureLodLow(DOF_DEPTH_TEXTURE, texcoord, 0.0).x;
+    float materialID = round(unpackM3P13(srTexelFetchLow(colortex2, texel, 0).a).x * 7.0);
+    bool isHand = materialID == float(MAT_HAND);
     #ifdef CORRECT_DOF_HAND_DEPTH
-        float handDepth = screenDepth / MC_HAND_DEPTH - 0.5 / MC_HAND_DEPTH + 0.5;
+        float handDepth = decodeHandDepth(screenDepth);
         if (isHand && abs(handDepth - 0.5) < 0.5) {
             screenDepth = handDepth;
         }
@@ -46,18 +52,22 @@ void main() {
     {
         viewPos = screenToViewPos(texcoord, screenDepth);
         #ifdef PARALLAX_DOF
-            vec4 gbufferData = texelFetch(colortex2, texel, 0);
-            float parallaxOffset = unpackM3P13(gbufferData.w).y * 0.2 * PARALLAX_DEPTH;
-            vec3 normal = decodeNormal(gbufferData.xy);
+            float parallaxOffset = clamp(srTexelFetchScene(colortex3, texel, 0).w, 0.0, 1.0) * 0.2 * PARALLAX_DEPTH;
+            vec3 normal = getGeoNormalTexel(texel);
             viewPos += viewPos * parallaxOffset / max(1e-5, -dot(viewPos, normal));
         #endif
         viewPos *= (1.0 - 2.0 * float(isHand));
     }
-    uint data = floatBitsToUint(-viewPos.z);
-    if (texel.y < 1 && texel.x < 2) {
-        data = texel.x > 0 ? texelFetch(colortex6, ivec2(3, 0), 0).x : texelFetch(colortex6, ivec2(2, 0), 0).x;
-    }
-    texBuffer6 = data;
+    texBuffer6 = floatBitsToUint(-viewPos.z);
+    #ifdef HELIAN_SR_INPUTS
+        srPrepareInputs(texel, texcoord);
+    #endif
 }
 
+#ifdef HELIAN_SR_RR
+/* RENDERTARGETS: 6,9,10,11,12,13 */
+#elif defined HELIAN_SR_INPUTS
+/* RENDERTARGETS: 6,9,10 */
+#else
 /* DRAWBUFFERS:6 */
+#endif

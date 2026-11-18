@@ -1,3 +1,10 @@
+struct Ray {
+    vec3 origin;
+    vec3 direction;
+    vec3 dirInv;
+    vec3 dirSigned;
+};
+
 float pow2(float a) {
     return a * a;
 }
@@ -70,10 +77,20 @@ float bayer64(vec2 a) {
 
 float bayer64Temporal(vec2 a) {
     float bayer = bayer64(a);
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         bayer = fract(bayer + (frameCounter & 63) * sqrt(0.4));
     #endif
     return bayer;
+}
+
+// Upscalers sharpen pixel-wise ray-march dithering into visible grain. Use
+// midpoint integration for SR (and when no temporal resolver is available).
+float volumetricSampleOffset(vec2 pixel) {
+    #if defined HELIAN_SR_ACTIVE || !defined TAA
+        return 0.5;
+    #else
+        return bayer64Temporal(pixel);
+    #endif
 }
 
 float smooth2DNoise(vec2 coord) {
@@ -179,24 +196,25 @@ vec3 hardcodedMetal(float metalness) {
 vec3 sunlightSpecular(vec3 viewDir, vec3 lightDir, vec3 normal, float smoothness, float NdotL, float NdotV, vec3 f0, vec3 f82) {
     float LdotV = dot(-viewDir, lightDir);
     float LdotH2 = LdotV * 0.5 + 0.5;
-    if (f0.x < 0.0) {
-        f0 = vec3(0.02);
-        LdotH2 = 1.777777 * LdotH2 - 0.777777;
-    }
-    float LdotH = sqrt(clamp(LdotH2, 0.0, 1.0));
+    float LdotHInv = inversesqrt(LdotH2);
+    float LdotH = clamp(LdotH2 * LdotHInv, 0.0, 1.0);
 
-    float roughness = pow2((1.0 + SUN_SPECULAR_ROUGH) - smoothness);
+    float roughness = pow2((1.0 + SUNLIGHTSPECULARROUGH) - smoothness);
     vec3 reflectDir = viewDir + 2.0 * NdotV * normal;
     float NdotH2 = clamp(dot(reflectDir, lightDir) * 1.0001 * 0.5 + 0.0001 * 0.5 + 0.5, 0.0, 1.0);
 
     float D = clamp(distribution(NdotH2, roughness) / 300.0, 0.0, 1.0) * 300.0;
     float V = geometry(NdotV, NdotL, roughness);
+    if (f0.x < 0.0) {
+        f0 = vec3(0.02);
+        LdotH = sqrt(clamp(1.777777 * LdotH * LdotH - 0.777777, 0.0, 1.0));
+    }
     vec3 F = F_AdobeF82(f0, f82, LdotH);
     return D * V * F;
 }
 
 float groundWetStrength(vec3 position, float normalDir, float metalness, float porosity, float outdoor) {
-    position *= 0.004;
+    position *= RAIN_PUDDLE_SCALE;
     position.y *= 0.2;
     float noise = smooth3DNoise(position);
     float weight = 1.0;

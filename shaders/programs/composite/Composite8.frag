@@ -28,18 +28,31 @@ in vec2 texcoord;
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
+#include "/libs/GbufferData.glsl"
 
 void main() {
+    if (srOutsideRenderArea(gl_FragCoord.xy)) discard;
     ivec2 texel = ivec2(gl_FragCoord.st);
 
-    vec4 centerData = texelFetch(colortex3, texel, 0);
+    vec4 centerData = srTexelFetchScene(colortex3, texel, 0);
     float centerDepth = centerData.w;
     float centerCoCRadius = clamp(abs(centerData.w), 0.0, 1.0);
+    float maxSampleRadius = srTexelFetchScene(colortex4, texel, 0).w;
 
-    float strength = 15.0 * MAX_BLUR_RADIUS;
-    #if SR_ENABLE
-        strength *= SR_RENDER_SCALE_FACTOR;
-    #endif
+    // Composite7 stores 1e-5 as the no-blur floor. In RGBA16F this becomes
+    // about 1.001e-5, producing a sample offset far below one thousandth of a
+    // pixel. Returning the center sample is visually and numerically stable.
+    if (maxSampleRadius <= 1.1e-5) {
+        #ifdef HELIAN_SR_ACTIVE
+            texBuffer3 = vec4(centerData.rgb, 1.0);
+        #else
+            texBuffer3 = vec4(clamp(pow(0.005 * centerData.rgb, vec3(1.0 / 2.2)), vec3(0.0), vec3(1.0)) * 10.0, 1.0);
+        #endif
+        return;
+    }
+
+    const mat2 goldenRotate = mat2(cos(2.39996323), sin(2.39996323), -sin(2.39996323), cos(2.39996323));
+    const float strength = 15.0 * MAX_BLUR_RADIUS;
     vec2 noise = blueNoiseTemporal(texcoord).xy;
     float radius = noise.y / DOF_SAMPLES + 1e-10;
     float noiseAngle = noise.x * PI * 2.0;
@@ -47,7 +60,6 @@ void main() {
     float sinNoise = sin(noiseAngle);
     vec2 angle = vec2(cosNoise, sinNoise) * strength;
 
-    float maxSampleRadius = texelFetch(colortex4, texel, 0).w;
     angle *= maxSampleRadius;
 
     vec3 totalColor = vec3(0.0);
@@ -69,10 +81,7 @@ void main() {
     for (int i = 0; i < DOF_SAMPLES; i++) {
         float sampleRadius = radius * inversesqrt(radius);
         vec2 sampleCoord = texcoord + texelSize * sampleRadius * angle;
-        #if SR_ENABLE
-            sampleCoord = min(sampleCoord, renderScale - texelSize * 0.5);
-        #endif
-        vec4 sampleData = textureLod(colortex3, sampleCoord, 0.0);
+        vec4 sampleData = srTextureLodScene(colortex3, sampleCoord, 0.0);
         vec3 sampleColor = sampleData.rgb;
         float sampleDepth = sampleData.w;
         float sampleRadiusScaled = sampleRadius * maxSampleRadius;
@@ -122,7 +131,11 @@ void main() {
     totalColor /= totalSamples + selfSamples + selfWeight;
     centerData.rgb = totalColor;
 
-    texBuffer3 = vec4(clamp(pow(0.005 * centerData.rgb, vec3(1.0 / 2.2)), vec3(0.0), vec3(1.0)) * 10.0, 1.0);
+    #ifdef HELIAN_SR_ACTIVE
+        texBuffer3 = vec4(centerData.rgb, 1.0);
+    #else
+        texBuffer3 = vec4(clamp(pow(0.005 * centerData.rgb, vec3(1.0 / 2.2)), vec3(0.0), vec3(1.0)) * 10.0, 1.0);
+    #endif
 }
 
 /* DRAWBUFFERS:3 */

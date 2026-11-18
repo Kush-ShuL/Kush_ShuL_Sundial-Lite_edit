@@ -31,8 +31,8 @@ layout(location = 11) in vec4 mc_midTexCoord;
 out vec4 texlmcoord;
 out vec3 color;
 out vec3 viewPos;
+out vec4 coordRange;
 
-noperspective out vec4 coordRange;
 flat out int material;
 
 #define MOD_PLANT_DETECTION
@@ -60,7 +60,7 @@ void main() {
     if (mc_Entity.x < -0.5) {
         // Used for MOD_LIGHT_DETECTION
         #ifdef MOD_PLANT_DETECTION
-            if (abs(max(abs(gl_Normal.x), abs(gl_Normal.z)) - 0.5) < 0.49) {
+            if (abs(max(abs(gl_Normal.x), abs(gl_Normal.z)) - 0.5) < 0.4) {
                 material = 19968;
             }
         #endif
@@ -115,10 +115,6 @@ void main() {
             }
             commonWave = material & 0x4E00;
         }
-        if (material == 8210) {
-            material = 18944;
-            commonWave = material & 0x4E00;
-        }
     }
 
     #ifdef PLANT_WAVE
@@ -133,9 +129,7 @@ void main() {
                 worldPos.xz -= (waveNoise.x * vec2(0.1, 0.05) + waveNoise.y * vec2(0.02, 0.02)) * height;
             }
             else if ((commonWave & 0x0600) == 0x0200) {
-                vec3 waveOffset = waveNoise.x * vec3(0.1 , 0.04, 0.07) + waveNoise.y * vec3(0.02, 0.01, 0.02);
-                waveOffset *= clamp(1.0 - abs(gl_Normal) * float(mc_Entity.x == 8210), 0.0, 1.0);
-                worldPos -= waveOffset;
+                worldPos -= waveNoise.x * vec3(0.1 , 0.04, 0.07) + waveNoise.y * vec3(0.02, 0.01, 0.02);
             }
         }
     #endif
@@ -157,11 +151,9 @@ void main() {
     coordSize = ceil(midCoord + coordToCenter) * albedoTexelSize - minCoord;
     coordRange = vec4(minCoord, coordSize);
 
-    #if SR_ENABLE
-        gl_Position.xy = gl_Position.xy * renderScale + (renderScale - 1.0) * gl_Position.w;
-    #endif
 
-    #ifdef TAA
+    #if defined TAA || defined HELIAN_SR_JITTER
         gl_Position.xy += taaOffset * gl_Position.w;
     #endif
+    gl_Position = srScalePosition(gl_Position);
 }

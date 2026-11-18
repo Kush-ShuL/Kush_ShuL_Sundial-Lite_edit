@@ -1,3 +1,4 @@
+#include "/libs/SuperResolutionSettings.glsl"
 uniform int frameCounter;
 uniform int isEyeInWater;
 uniform int heldBlockLightValue;
@@ -8,16 +9,13 @@ uniform float nightVision;
 uniform float alphaTestRef;
 uniform float rainStrength;
 uniform float rainyMieBeta;
-uniform float handRotationX;
-uniform float handRotationY;
 uniform float rainyStrength;
 uniform float darknessFactor;
 uniform float weatherStrength;
 uniform float frameTimeCounter;
-uniform int worldTime;
-uniform float endFlashIntensity;
 uniform ivec2 atlasSize;
 uniform ivec2 eyeBrightnessSmooth;
+uniform vec2 taaOffset;
 uniform vec2 texelSize;
 uniform vec2 screenSize;
 uniform vec3 fogColor;
@@ -46,15 +44,16 @@ uniform sampler2D colortex4;
 uniform sampler2D colortex5;
 uniform usampler2D colortex6;
 uniform sampler2D colortex7;
+uniform sampler2D colortex8;
+#ifdef HELIAN_SR_INPUTS
+uniform sampler2D colortex9;
+#endif
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
 uniform sampler2D depthtex2;
 uniform sampler2D shadowtex1;
 uniform sampler2D shadowcolor0;
 uniform sampler2DShadow shadowtex0;
-#ifdef IS_IRIS
-    uniform sampler2D transmittanceTex;
-#endif
 
 uniform mat4 shadowModelView;
 uniform mat4 shadowProjection;
@@ -66,13 +65,6 @@ uniform mat4 gbufferModelViewInverse;
 uniform mat4 gbufferProjectionInverse;
 uniform mat4 gbufferPreviousModelView;
 uniform mat4 gbufferPreviousProjection;
-
-#if SR_ENABLE && SR_ALGO_SUPPORTS_JITTER
-    uniform vec2 SRJitterOffset;
-    vec2 taaOffset = SRJitterOffset * texelSize * 2.0 * vec2(1.0, -1.0);
-#else
-    uniform vec2 taaOffset;
-#endif
 
 #ifdef DISTANT_HORIZONS
     uniform sampler2D dhDepthTex0;
@@ -97,24 +89,11 @@ uniform mat4 gbufferPreviousProjection;
 #endif
 
 const float PI = 3.1415926535897;
-#if SR_ENABLE
-    vec2 renderScale = floor(SR_RENDER_SCALE_FACTOR * screenSize) * texelSize;
-    vec2 upscaleRatio = screenSize / floor(SR_RENDER_SCALE_FACTOR * screenSize);
-    vec2 screenEdge = renderScale;
-    const float mipBias = log2(SR_RENDER_SCALE_FACTOR);
-#else
-    const vec2 screenEdge = vec2(1.0);
-    const float mipBias = 0.0;
-#endif
-const mat2 goldenRotate = mat2(cos(2.39996323), sin(2.39996323), -sin(2.39996323), cos(2.39996323));
 
 #ifdef SETTINGS
     float nightBrightness = mix(NIGHT_BRIGHTNESS, NIGHT_VISION_BRIGHTNESS, nightVision);
-    const vec3 MOONLIGHT_TINT = vec3(1.0, 1.1, 1.4);
-    float nightFactor = 1.0 - clamp(sunDirection.y * 1e+5, 0.0, 1.0);
-    vec3 sunColor = sunlightColor * clamp(nightBrightness + clamp(sunDirection.y * 1e+5, 0.0, 1.0), 0.0, 1.0) * (vec3(1.0) + (MOONLIGHT_TINT - vec3(1.0)) * nightFactor);
+    vec3 sunColor = sunlightColor * clamp(nightBrightness + clamp(sunDirection.y * 1e+5, 0.0, 1.0), 0.0, 1.0);
 #endif
 
-#if defined IS_IRIS && defined THE_END && MC_VERSION >= 12109
-    #define END_FLASH
-#endif
+#include "/libs/SuperResolution.glsl"
+#include "/libs/HandDepth.glsl"

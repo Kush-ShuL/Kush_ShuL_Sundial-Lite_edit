@@ -1,6 +1,7 @@
 #version 330 compatibility
 
-#define SKY_COLOR_UP
+#define HELIAN_SR_POST
+
 #define SMOOTH_CENTER_DEPTH
 
 #include "/programs/common/Common.vert"

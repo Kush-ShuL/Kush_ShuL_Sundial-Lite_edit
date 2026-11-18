@@ -1,5 +1,5 @@
 #version 330 compatibility
 
-#define AFTER_SR
+#define HELIAN_SR_POST
 
 #include "/programs/common/Common.vert"
