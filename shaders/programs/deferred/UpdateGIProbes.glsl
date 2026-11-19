@@ -40,8 +40,8 @@ void main() {
         move-=n*dot(n,move);
         int u=(axis+1)%3,v=(axis+2)%3;
         vec2 oldD=vec2(anchor[u],anchor[v])-0.5, newD=vec2(local[u],local[v])-0.5;
-        if (dot(oldD,oldD)<=dot(newD,newD)+0.002) { pos+=move; local+=move; }
-        else if (dot(move,move)>0.04) {valid=false;hist=vec4(0.0);}
+        if (dot(move,move)<=0.04 || dot(oldD,oldD)<=dot(newD,newD)+0.002) { pos+=move; local+=move; }
+        else {valid=false;hist=vec4(0.0);}
     }
     // Keep four independent estimates, not an EMA of ever-changing directions.
     // Refreshing a phase in a static scene replaces it with the same estimate.
@@ -57,20 +57,21 @@ void main() {
         #endif
         ivec3 worldCell=cell+cameraPositionInt;
         int stratum=(worldCell[(axis+1)%3]&1)+2*(worldCell[(axis+2)%3]&1);
-        groups[phase]=vec4(rtDiffuseBounce(pos,n,n,stratum,phase),1.0);
+        vec3 bounce=rtDiffuseBounce(pos,n,n,stratum,phase);
+        // Only blend repeat observations of the same ray set and surface.
+        // Fresh probes still use the full first observation.
+        groups[phase]=vec4(mix(bounce,groups[phase].rgb,0.5*groups[phase].a),1.0);
         phase=(phase+1)&3;
     }
-    vec3 sum=vec3(0.0), peak=vec3(0.0);
-    float count=0.0, peakY=0.0, secondY=0.0;
+    vec3 sum=vec3(0.0);
+    float count=0.0;
     for (int i=0;i<4;++i) {
         if (groups[i].a<0.5) continue;
         sum+=groups[i].rgb; count+=1.0;
-        float y=dot(groups[i].rgb,vec3(0.2126,0.7152,0.0722));
-        if (y>peakY) { secondY=peakY;peakY=y;peak=groups[i].rgb; } else secondY=max(secondY,y);
     }
     if (count==0.0) return;
-    // An unsupported hot group must not brighten a whole interpolated patch.
-    sum-=peak*max(0.0,1.0-(2.0*secondY+0.12)/max(peakY,1e-5));
+    // These groups now contain reflected surface light only. A bright wall
+    // occupying one sector must retain its contribution to the mean.
     hist=vec4(max(sum,vec3(0.0))/count,count*4.0+float(phase));
     uvec4 stamp=uvec4(key,packUnorm4x8(vec4(local,0.0)),packSnorm4x8(vec4(n,0.0)),uint(frameCounter)+1u);
     if (writeA) imageStore(giStampImageA,slot,stamp); else imageStore(giStampImageB,slot,stamp);

@@ -31,18 +31,21 @@ bool giLookup(ivec3 cell, vec3 local, vec3 n, int axis, bool previous, int entry
     uint key = giKey(cell,local,n,axis);
     bool useA = ((frameCounter & 1) == 0) != previous;
     uint tag = uint(frameCounter) + (previous ? 0u : 1u);
+    uint bestAge=17u;
     for (int i=0;i<4;++i) {
         ivec2 p = giSlot(key,i);
         uvec4 s = useA ? texelFetch(giStampA,p,0) : texelFetch(giStampB,p,0);
-        if (s.x != key || s.w==0u || (tag-s.w) > (previous ? 16u : 0u)) continue;
+        uint age=tag-s.w;
+        if (s.x!=key || s.w==0u || age>=bestAge || (!previous && age!=0u)) continue;
         vec3 storedN = unpackSnorm4x8(s.z).xyz;
-        anchor=unpackUnorm4x8(s.y).xyz;
-        if (dot(n,storedN)<0.92 || abs(dot(storedN,anchor-local))>0.08) return false;
-        storedSlot=p;
-        field = giReadField(p,entry,useA);
-        return true;
+        vec3 a=unpackUnorm4x8(s.y).xyz;
+        if (dot(n,storedN)<0.92 || abs(dot(storedN,a-local))>0.08) continue;
+        anchor=a; storedSlot=p; bestAge=age;
+        if (age==0u) break;
     }
-    return false;
+    if (bestAge==17u) return false;
+    field=giReadField(storedSlot,entry,useA);
+    return true;
 }
 
 // Read the four neighbouring patches on the receiver plane. Interior gaps and

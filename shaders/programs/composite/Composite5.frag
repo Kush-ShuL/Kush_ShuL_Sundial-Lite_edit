@@ -83,14 +83,76 @@ vec3 refractionViewPos(vec2 uv,float depth) {
     return screenToViewPos(uv,depth);
 }
 
-bool refractedBackground(vec2 target, vec3 front, vec3 faceNormal, out vec3 rgb, out float depth, out vec2 depthUV) {
+// Follow both parts of the ray (inside the slab, then parallel to the
+// incident ray). In screen space the second segment ends at the original UV.
+float glassReceiverZ(vec2 uv,vec3 front,vec3 face) {
+    if (any(lessThan(uv,vec2(0))) || any(greaterThanEqual(uv,vec2(1)))) return -1e20;
+    ivec2 p=ivec2(uv*screenSize);
+    uv=(vec2(p)+0.5)/screenSize;
+    float d=srTexelFetchLow(depthtex1,p,0).r;
+    #ifdef LOD
+        if (d==1.0) d+=getLodDepthSolid(uv);
+    #endif
+    vec3 bg=refractionViewPos(uv,d);
+    bool sky=d==1.0 || d>=2.0;
+    float z=!sky && dot(bg-front,face)<0.0 ? bg.z : -1e20;
+    float m=srTexelFetchLow(colortex10,p,0).r;
+    if (m<min(d,1.0) && srTexelFetchLow(colortex21,p,0).a>=0.5) {
+        vec3 model=refractionViewPos(uv,m);
+        if (dot(model-front,face)<0.0) z=model.z;
+    }
+    return z;
+}
+
+vec2 glassOffset(vec2 uv,vec3 front,vec3 bent,vec3 face,float thickness) {
+    vec3 back=front+bent*(thickness/max(0.001,-dot(bent,face)));
+    if (back.z>=-0.001) return vec2(0);
+    vec2 span=0.5*REFRACTION_STRENGTH*(viewToProjectionPos(back).xy-viewToProjectionPos(front).xy);
+    float pixels=length(span*screenSize);
+    if (pixels<0.1) return vec2(0);
+    int steps=int(clamp(ceil(pixels*0.5),1.0,8.0));
+    for (int leg=0;leg<2;++leg) {
+        // Reciprocal view depth is linear along a projected segment.
+        float start=leg==0 ? 0.0 : 1.0, end=1.0-start;
+        float iz0=leg==0 ? -1.0/front.z : -1.0/back.z;
+        float iz1=leg==0 ? -1.0/back.z : 0.0;
+        float lo=0.0;
+        for (int i=1;i<=steps;++i) {
+            float hi=float(i)/float(steps);
+            vec2 at=uv+span*mix(start,end,hi);
+            float z=glassReceiverZ(at,front,face);
+            if (z>-1e19 && -1.0/z>=mix(iz0,iz1,hi)) {
+                // Refine the first crossing, not a second guessed background
+                // plane. At a silhouette only keep a depth-consistent hit.
+                for (int j=0;j<4;++j) {
+                    float mid=0.5*(lo+hi);
+                    float mz=glassReceiverZ(uv+span*mix(start,end,mid),front,face);
+                    if (mz>-1e19 && -1.0/mz>=mix(iz0,iz1,mid)) {hi=mid;z=mz;}
+                    else lo=mid;
+                }
+                if (abs(iz1-iz0)<1e-8) return span*mix(start,end,hi);
+                float hit=(-1.0/z-iz0)/(iz1-iz0);
+                if (hit>=lo-0.02 && hit<=hi+0.02)
+                    return span*mix(start,end,clamp(hit,0.0,1.0));
+                // A foreground silhouette has no represented surface behind
+                // it in the colour buffer. Keep the original view there.
+                return vec2(0);
+            }
+            lo=hi;
+        }
+    }
+    return vec2(0);
+}
+
+float refractedBackground(vec2 target, vec3 front, vec3 faceNormal, out vec3 rgb, out float depth, out vec2 depthUV) {
     vec2 grid = target * screenSize - 0.5;
     ivec2 base = ivec2(floor(grid));
     vec2 f = fract(grid);
     float sum = 0.0, best = 0.0;
     rgb = vec3(0.0);
     for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
-        ivec2 p = clamp(base + ivec2(x,y), ivec2(0), ivec2(screenSize)-1);
+        ivec2 p=base+ivec2(x,y);
+        if (any(lessThan(p,ivec2(0))) || any(greaterThanEqual(p,ivec2(screenSize)))) continue;
         vec2 uv = (vec2(p) + 0.5) / screenSize;
         float d = srTexelFetchLow(depthtex1,p,0).r;
         #ifdef LOD
@@ -111,9 +173,7 @@ bool refractedBackground(vec2 target, vec3 front, vec3 faceNormal, out vec3 rgb,
         sum += weight;
         if (weight > best) { best = weight; depth = d; depthUV = uv; }
     }
-    if (sum <= 1e-5) return false;
-    rgb /= sum;
-    return true;
+    return clamp(sum,0.0,1.0); // rgb retains the valid bilinear weights.
 }
 
 float volumetricFogDensity(vec3 position) {
@@ -250,16 +310,11 @@ void main() {
                 refractionOffset = (bent.xy-incident.xy/incident.z*bent.z)
                     * vec2(gbufferProjection[0].x,gbufferProjection[1].y)*0.5*min(gap,2.0)/max(0.01,-waterViewPos.z);
             } else {
-                // Follow the refracted ray through the slab. Once it exits the
-                // parallel back face it travels along the original direction.
-                vec3 bent = refract(incident,n,1.0/1.5);
-                float gapZ = max(0.0,waterViewPos.z-viewPos.z);
-                float travel = min(1.0/max(0.001,-dot(bent,face)),gapZ/max(0.001,-bent.z));
-                vec3 exitPos = waterViewPos + travel*bent;
-                vec3 target = exitPos + incident*max(0.0,exitPos.z-viewPos.z)/max(0.001,-incident.z);
-                refractionOffset = 0.5*(viewToProjectionPos(target).xy-viewToProjectionPos(waterViewPos).xy);
+                float thickness=gbufferData.parallaxOffset>0.0 ? gbufferData.parallaxOffset : 1.0;
+                refractionOffset=glassOffset(texcoord,waterViewPos,refract(incident,n,1.0/1.5),face,thickness);
+                gbufferData.parallaxOffset=0.0;
             }
-            refractionOffset *= REFRACTION_STRENGTH;
+            if (isTargetWater) refractionOffset*=REFRACTION_STRENGTH;
             vec2 screenEdgeIntersection = mix(texcoord, 1.0 - texcoord, greaterThan(refractionOffset,vec2(0.0))) / max(abs(refractionOffset),vec2(1e-8));
             float screenEdgeLength = min(screenEdgeIntersection.x, screenEdgeIntersection.y);
             if (screenEdgeLength < 1.0 / (1.0 - REFRACTION_EDGE_FADE)) {
@@ -270,21 +325,12 @@ void main() {
             float targetSolidDepth;
             vec3 targetColor;
             vec2 depthUV;
-            bool found = refractedBackground(refractionTarget,waterViewPos,face,targetColor,targetSolidDepth,depthUV);
-            if (!found) found = refractedBackground(texcoord+0.5*refractionOffset,waterViewPos,face,targetColor,targetSolidDepth,depthUV);
-            if (found) {
-                solidDepth = targetSolidDepth;
-                solidColor.rgb = targetColor;
-                vec3 viewPos;
-                #ifdef LOD
-                    if (solidDepth > 1.0) {
-                        viewPos = screenToViewPosLod(depthUV, solidDepth - 1.0);
-                    } else
-                #endif
-                {
-                    viewPos = screenToViewPos(depthUV, solidDepth);
-                }
-                worldPos = mat3(gbufferModelViewInverse) * viewPos;
+            float coverage=refractedBackground(refractionTarget,waterViewPos,face,targetColor,targetSolidDepth,depthUV);
+            if (coverage>0.0) {
+                solidColor.rgb=targetColor+(1.0-coverage)*solidColor.rgb;
+                vec3 refractedView=mix(viewPos,refractionViewPos(depthUV,targetSolidDepth),coverage);
+                worldPos=mat3(gbufferModelViewInverse)*refractedView;
+                if (coverage>=0.999) solidDepth=targetSolidDepth;
             }
             }
 
@@ -334,7 +380,7 @@ void main() {
             #if WATER_TYPE == 0
                 waterStain = float(!isTargetWater);
             #endif
-            stainedColor *= log2(1.0 - fresnel(LdotH, f0));
+            stainedColor *= log2(max(vec3(1e-6),1.0 - fresnel(LdotH, f0)));
             stainedColor += sqrt(gbufferData.albedo.w * 1.5) * log2(clamp(gbufferData.albedo.rgb + 1e-5, 0.0, 1.0) * (1.0 - 0.5 * gbufferData.albedo.w * gbufferData.albedo.w)) * waterStain;
             stainedColor = exp2(stainedColor);
 

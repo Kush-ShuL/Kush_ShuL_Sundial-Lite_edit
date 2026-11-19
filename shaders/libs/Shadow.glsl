@@ -3,6 +3,7 @@ const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
 
 #ifdef SHADOW_AND_SKY
     #include "/libs/ShadowCoordinates.glsl"
+    #include "/libs/ShadowTransmission.glsl"
 
     vec3 waterCaustic(vec3 waterShadowCoord, vec3 worldPos, vec3 lightDir) {
         vec3 caustic = vec3(1.0);
@@ -64,16 +65,9 @@ const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
                 }
 
                 #ifdef TRANSPARENT_SHADOW
-                    vec3 transparentShadowCoord = shadowCoord - vec3(0.5, 0.0, 0.0);
-                    vec4 transparentShadowColor = textureLod(shadowcolor0, transparentShadowCoord.st, 0.0);
-                    transparentShadowColor.rgb = pow(
-                        transparentShadowColor.rgb * (1.0 - 0.5 * pow2(transparentShadowColor.w)),
-                        vec3(sqrt(transparentShadowColor.w * 2.2 * 2.2 * 1.5))
-                    );
-                    float transparentShadowStrength = textureLod(shadowtex0, transparentShadowCoord, 0.0);
-                    transparentShadowColor.rgb = mix(transparentShadowColor.rgb, vec3(1.0), vec3(transparentShadowStrength));
-                    shadow *= transparentShadowColor.rgb;
-                    subsurfaceScattering *= transparentShadowColor.rgb;
+                    vec3 transmission=glassTransmission(shadowCoord);
+                    shadow *= transmission;
+                    subsurfaceScattering *= transmission;
                 #endif
 
                 vec3 waterShadowCoord = shadowCoord - vec3(0.0, 0.5, 0.0);

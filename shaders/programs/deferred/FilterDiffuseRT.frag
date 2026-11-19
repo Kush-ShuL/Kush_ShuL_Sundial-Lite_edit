@@ -32,7 +32,7 @@ uint buildResolveMask(ivec2 p,ivec2 size) {
 
 vec4 filterDirect(ivec2 p,ivec2 size) {
     vec4 center=texelFetch(colortex22,p,0);
-    if (center.w<=0.0 || frameCounter<2) return center;
+    if (center.w<=0.0) return center;
     ivec2 receiver=min(ivec2((vec2(p)+0.5)*screenSize/vec2(size)),ivec2(screenSize)-1);
     vec2 uv=(vec2(receiver)+0.5)/screenSize;
     float d=srTexelFetchLow(depthtex0,receiver,0).r;
@@ -40,6 +40,31 @@ vec4 filterDirect(ivec2 p,ivec2 size) {
     #ifdef LOD
         if (d>=1.0) view=screenToViewPosLod(uv,getLodDepthSolidDeferred(uv));
     #endif
+    vec3 n=getGeoNormalTexel(receiver), lo=center.rgb, hi=center.rgb;
+    vec3 local=4.0*center.rgb; float taps=4.0;
+    int litNeighbours=0;
+    // The symmetric [1,2,2,2,1] kernel gives equal total weight to each
+    // of the four phases on either axis, without shifting the image.
+    for (int y=-2;y<=2;++y) for (int x=-2;x<=2;++x) {
+        if (x==0 && y==0) continue;
+        ivec2 q=p+ivec2(x,y);
+        if (any(lessThan(q,ivec2(0))) || any(greaterThanEqual(q,size))) continue;
+        vec4 v=texelFetch(colortex22,q,0);
+        if (v.w<=0.0) continue;
+        ivec2 g=min(ivec2((vec2(q)+0.5)*screenSize/vec2(size)),ivec2(screenSize)-1);
+        if (dot(n,getGeoNormalTexel(g))<0.97) continue;
+        vec3 ray=screenToViewPos((vec2(g)+0.5)/screenSize,0.0);
+        if (abs(dot(n,ray*(v.w/-ray.z)-view))>max(0.025,0.002*center.w)) continue;
+        lo=min(lo,v.rgb); hi=max(hi,v.rgb);
+        // Reconstruct fractional coverage on this plane. Weighting by
+        // brightness here would pin dark samples to zero inside a penumbra.
+        float w=float((abs(x)==2 ? 1 : 2)*(abs(y)==2 ? 1 : 2));
+        litNeighbours+=int(max(v.r,max(v.g,v.b))>0.002);
+        local+=w*v.rgb; taps+=w;
+    }
+    if (litNeighbours>=2 || max(center.r,max(center.g,center.b))>0.002) center.rgb=local/taps;
+    else hi=center.rgb;
+    if (frameCounter<2) return center;
     vec3 prev=prevWorldToViewPos(viewToWorldPos(view)+cameraMovement);
     if (prev.z>=0.0) return center;
     vec2 prevUV=0.5*prevViewToProjectionPos(prev).xy+0.5;
@@ -57,15 +82,6 @@ vec4 filterDirect(ivec2 p,ivec2 size) {
         history+=k*h.rgb;weight+=k;
     }
     if (weight<=0.01) return center;
-    vec3 lo=center.rgb,hi=center.rgb,n=getGeoNormalTexel(receiver);
-    for (int i=0;i<4;++i) {
-        ivec2 off=i<2 ? ivec2(2*i-1,0) : ivec2(0,2*(i-2)-1);
-        ivec2 q=clamp(p+off,ivec2(0),size-1);
-        vec4 v=texelFetch(colortex22,q,0);
-        ivec2 g=min(ivec2((vec2(q)+0.5)*screenSize/vec2(size)),ivec2(screenSize)-1);
-        if (v.w<=0.0 || abs(v.w-center.w)>max(0.03,center.w*0.02) || dot(n,getGeoNormalTexel(g))<0.95) continue;
-        lo=min(lo,v.rgb); hi=max(hi,v.rgb);
-    }
     // Preserve newly exposed dark surfaces; never borrow a brighter old
     // shadow than the current same-surface neighbourhood can support.
     return vec4(mix(center.rgb,clamp(history/weight,lo,hi),0.6*weight),center.w);

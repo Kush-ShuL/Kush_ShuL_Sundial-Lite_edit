@@ -18,32 +18,35 @@ bool rtClearLampBox(ivec3 lo,ivec3 hi) {
     return true;
 }
 
-vec3 rtFaceSample(vec3 pos,vec3 grid,vec3 target,ivec3 cell,vec3 normal,bool clearPath) {
+vec3 rtFaceVisibility(vec3 pos,vec3 grid,vec3 target,ivec3 cell,vec3 normal,bool clearPath,out float cosine) {
     vec3 delta=target-grid;
     float d=max(length(delta),0.001);
     vec3 dir=delta/d;
-    float cosine=max(dot(normal,dir),0.0);
-    if (clearPath) return vec3(cosine);
+    cosine=max(dot(normal,dir),0.0);
+    if (clearPath) return vec3(1.0);
     if (cosine==0.0) return vec3(0.0);
-    return cosine*rtVisibilityTo(pos,dir,max(0.0001,d-0.0003),cell);
+    return rtVisibilityTo(pos,dir,max(0.0001,d-0.0003),cell);
+}
+
+float rtAreaCosine(vec3 delta,vec3 normal,vec3 u,vec3 v) {
+    float sum=0.0;
+    for (int i=0;i<4;++i) {
+        vec3 d=delta+0.57735027*(float(2*(i&1)-1)*u+float(2*(i>>1)-1)*v);
+        sum+=max(dot(normal,d),0.0)*inversesqrt(max(dot(d,d),1e-8));
+    }
+    return 0.25*sum;
 }
 
 // RGB is premultiplied by replacement coverage. An occluded lamp still
 // replaces the baked block light, so the warm fallback cannot shine through it.
-vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint key,bool area) {
-    uint hash=rtHash(key),index=0u;
-    for (int i=0;i<rtMaxProbes;++i) {
-        ivec2 slot=rtSlot(hash,i);
-        uint stored=texelFetch(rtKeys,slot,0).r;
-        if (stored==key) {index=uint(slot.x+256*slot.y);break;}
-        if (stored==0u || i+1==rtMaxProbes) return vec4(0.0);
-    }
+vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint index,ivec3 cell,int phase) {
+    bool area=phase>=0;
     uint record=texelFetch(rtLights,rtSourceSlot(index),0).r;
-    ivec3 cell=rtDecodeCell(key);
     vec3 center=vec3(cell)+0.5, toReceiver=grid-center;
     float level=clamp((rtLightLevel(record)-max(length(toReceiver)-0.5,0.0))/15.0,0.0,1.0);
     float cover=smoothstep(0.0,0.18,level);
     if (cover<=0.0) return vec4(0.0);
+    if (dot(toReceiver,normal)>0.87) return vec4(0.0,0.0,0.0,cover);
     int face=-1; float best=0.0;
     for (int i=0;i<6;++i) {
         float d=toReceiver[i/2]*float(2*(i&1)-1);
@@ -62,7 +65,7 @@ vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint key,bool area) {
         u[a]=min(0.42,0.5-abs(t[a]-center[a]));
         v[b]=min(0.42,0.5-abs(t[b]-center[b]));
     } else {
-        uint point=texelFetch(rtLights,rtSourceSlot(index)+ivec3(0,0,64),0).r;
+        uint point=texelFetch(rtLights,rtSourceSlot(index)+ivec3(0,0,rtSourceSlices),0).r;
         t=vec3(cell)+vec3((point>>8u)&255u,(point>>16u)&255u,point&255u)/255.0;
         // A torch flame is a small emitter above the stem, not a downward
         // facing square at the foot of its block.
@@ -78,28 +81,33 @@ vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint key,bool area) {
     vec3 farCorner=abs(t-grid+pos)+extent;
     bool clearPath=dot(farCorner,farCorner)<float(RT_DISTANCE*RT_DISTANCE) && rtClearLampBox(lo,hi);
     vec3 vis;
-    if (area) {
-        // Rotate opposite pairs over the source, continuously in surface space.
-        // A fixed cross projects the same four shadow boundaries down the wall.
-        float phase=dot(toReceiver,vec3(12.73,17.91,21.37))
-                   +2.4*sin(dot(toReceiver,vec3(7.1,-9.3,6.7)));
-        vec2 rot=vec2(cos(phase),sin(phase));
-        vec3 sum=vec3(0.0),lo=vec3(1.0),hi=vec3(0.0);
-        int pairs=2;
-        for(int j=0;j<4;++j) {
-            if (j==2) {
-                if (max(hi.r-lo.r,max(hi.g-lo.g,hi.b-lo.b))<0.045) break;
-                rot=0.70710678*vec2(rot.x-rot.y,rot.x+rot.y);
-                pairs=4;
-            }
-            vec2 d=(j&1)==0 ? rot*0.46 : vec2(-rot.y,rot.x)*0.89;
-            vec3 off=d.x*u+d.y*v;
-            vec3 a=rtFaceSample(pos,grid,t+off,cell,normal,clearPath);
-            vec3 b=rtFaceSample(pos,grid,t-off,cell,normal,clearPath);
-            lo=min(lo,min(a,b));hi=max(hi,max(a,b));sum+=a+b;
+    float cosine;
+    if (area && clearPath) vis=vec3(rtAreaCosine(t-grid,normal,u,v));
+    else if (area) {
+        // Four points of a 64-point 2D Sobol net. A 4x4 filter footprint
+        // combines all sixteen phases. Keep the pattern fixed between frames.
+        uvec3 worldCell=uvec3(ivec3(floor(cameraPosition))+cell-rtGridSize/2);
+        uint seed=rtHash(worldCell.x*73856093u ^ worldCell.y*19349663u ^ worldCell.z*83492791u);
+        vec3 sum=vec3(0.0);float totalCosine=0.0;
+        // Digital shifts for Sobol dimensions 1 and 2, in six-bit coordinates.
+        int p=phase^int(seed&15u);
+        int xs=((p&1)<<3)|((p&2)<<1)|((p&4)>>1)|((p&8)>>3);
+        int ys=((p&1)*40)^(((p>>1)&1)*60)^(((p>>2)&1)*34)^(((p>>3)&1)*51);
+        for (int j=0;j<2;++j) {
+            int x=j*32+xs, y=(j*32)^ys;
+            vec2 d=(vec2(x,y)+0.5)/32.0-1.0;
+            vec2 e=(vec2(x^16,y^48)+0.5)/32.0-1.0;
+            if ((seed&16u)!=0u) {d=d.yx;e=e.yx;}
+            float ca,cb;
+            vec3 a=rtFaceVisibility(pos,grid,t+d.x*u+d.y*v,cell,normal,false,ca);
+            vec3 b=rtFaceVisibility(pos,grid,t+e.x*u+e.y*v,cell,normal,false,cb);
+            sum+=a*ca+b*cb;totalCosine+=ca+cb;
         }
-        vis=sum/float(2*pairs);
-    } else vis=rtFaceSample(pos,grid,t,cell,normal,clearPath);
+        vis=sum*(rtAreaCosine(t-grid,normal,u,v)/max(totalCosine,1e-6));
+    } else {
+        vis=rtFaceVisibility(pos,grid,t,cell,normal,clearPath,cosine);
+        vis*=cosine;
+    }
     float f=VANILLA_BLOCK_LIGHT_FADE;
     float strength=1.0/(f-f*f/(1.0+f)*level)-1.0/f;
     return vec4(vis*rtLightRGB(record)*(strength*strength*LIGHT_BRIGHTNESS),cover);
@@ -109,45 +117,93 @@ uint rtListedSource(ivec3 brick,int lane,ivec3 shift) {
     uint ref=texelFetch(rtLights,rtLightListSlot(brick,lane),0).r;
     if (ref==0u) return 0u;
     ivec3 delta=ivec3(ref&63u,(ref>>6u)&63u,(ref>>12u)&63u)-16;
-    return rtCellKey(brick*8+delta-shift);
+    return rtCellKey(brick*rtLightBrickSize+delta-shift);
 }
 
-vec4 rtLocalLighting(vec3 pos,vec3 normal,bool area) {
+int rtEmitterPhase(ivec2 p) {
+    ivec2 high=(p>>1)&1, low=p&1;
+    return low.x+2*low.y+4*(high.x+2*high.y);
+}
+
+float rtLocalFade(vec3 pos) {
+    return 1.0-smoothstep(float(RT_DISTANCE)-min(15.0,float(RT_DISTANCE)*0.25),float(RT_DISTANCE),length(pos));
+}
+
+// Primary receivers must see every emitter in range, even if other lamps
+// across a wall would win all four slots of the cheaper bounce-light list.
+vec4 rtDirectLamps(vec3 pos,vec3 normal,int phase) {
+    if (!rtInRange(pos)) return vec4(0.0);
+    vec3 grid=pos+fract(cameraPosition)+float(rtGridSize/2);
+    if ((texelFetch(rtRegions,ivec3(floor(grid))>>5,0).r&2u)==0u) return vec4(0.0);
+    const float reach=15.5;
+    ivec3 lo=max(ivec3(floor((grid-reach)/16.0)),ivec3(0));
+    ivec3 hi=min(ivec3(floor((grid+reach)/16.0)),ivec3(rtBinCount-1));
+    vec4 sum=vec4(0.0);
+    for (int z=lo.z;z<=hi.z;++z) for (int y=lo.y;y<=hi.y;++y) for (int x=lo.x;x<=hi.x;++x) {
+        ivec3 bin=ivec3(x,y,z);
+        vec3 gap=max(abs(grid-(vec3(bin)*16.0+8.0))-7.5,0.0);
+        if (dot(gap,gap)>=reach*reach) continue;
+        uint head=texelFetch(rtLights,rtEmitterHeadSlot(bin),0).r;
+        while (head!=0u) {
+            uint index=head-1u;
+            ivec2 slot=ivec2(index&255u,index>>8u);
+            ivec3 cell=rtDecodeCell(texelFetch(rtKeys,slot,0).r);
+            vec4 lamp=rtLamp(pos,grid,normal,index,cell,phase);
+            sum.rgb+=lamp.rgb;sum.a=max(sum.a,lamp.a);
+            head=texelFetch(rtLights,rtEmitterNextSlot(index),0).r;
+        }
+    }
+    return sum*rtLocalFade(pos);
+}
+
+vec4 rtBounceLamps(vec3 pos,vec3 normal) {
     if (!rtInRange(pos)) return vec4(0.0);
     ivec3 shift=rtLightShift(cameraPosition);
     vec3 grid=pos+fract(cameraPosition)+float(rtGridSize/2);
     if ((texelFetch(rtRegions,ivec3(floor(grid))>>5,0).r&2u)==0u) return vec4(0.0);
-    vec3 site=(grid+vec3(shift))/8.0-0.5;
-    ivec3 base=ivec3(floor(site)),last=(ivec3(rtGridSize-1)+shift)>>3;
-    // Blend only near boundaries and trace each distinct source once per lane.
+    vec3 site=(grid+vec3(shift))/float(rtLightBrickSize)-0.5;
+    ivec3 base=ivec3(floor(site)),last=(ivec3(rtGridSize-1)+shift)/rtLightBrickSize;
     vec3 f=smoothstep(vec3(0.35),vec3(0.65),fract(site));
+    ivec3 first=ivec3(equal(f,vec3(1.0))),end=ivec3(greaterThan(f,vec3(0.0)));
     vec4 result=vec4(0.0);
-    ivec3 firstTap=ivec3(equal(f,vec3(1.0))),lastTap=ivec3(greaterThan(f,vec3(0.0)));
-    for (int lane=0;lane<4;++lane) {
-        uint ids[8]; float weights[8]; int count=0;
-        if (all(equal(firstTap,lastTap))) {
-            uint key=rtListedSource(clamp(base+firstTap,ivec3(0),last),lane,shift);
-            if (key==0u) continue;
-            ids[0]=key;weights[0]=1.0;count=1;
-        } else
-        for (int z=firstTap.z;z<=lastTap.z;++z) for (int y=firstTap.y;y<=lastTap.y;++y) for (int x=firstTap.x;x<=lastTap.x;++x) {
-            ivec3 off=ivec3(x,y,z);
-            vec3 k=mix(1.0-f,f,vec3(off));
-            float w=k.x*k.y*k.z;
-            if (w<=0.0) continue;
-            ivec3 brick=clamp(base+off,ivec3(0),last);
-            uint id=rtListedSource(brick,lane,shift);
-            if (id==0u) continue;
-            int i=0; for (;i<count;++i) if (ids[i]==id) break;
-            if (i==count) {ids[i]=id;weights[i]=0.0;++count;}
-            weights[i]+=w;
+    // A source may rank differently in each brick. Trace the union once;
+    // keep coverage per brick so a blocked lamp still replaces baked light.
+    uint keys[32], membership[32];
+    float weights[32], brickWeights[8], coverage[8];
+    int count=0, bricks=0;
+    for (int z=first.z;z<=end.z;++z) for (int y=first.y;y<=end.y;++y) for (int x=first.x;x<=end.x;++x) {
+        ivec3 off=ivec3(x,y,z), brick=clamp(base+off,ivec3(0),last);
+        vec3 k=mix(1.0-f,f,vec3(off));
+        float w=k.x*k.y*k.z;
+        brickWeights[bricks]=w; coverage[bricks]=0.0;
+        for (int lane=0;lane<rtLightsPerBrick;++lane) {
+            uint key=rtListedSource(brick,lane,shift);
+            if (key==0u) break;
+            int i=0; while (i<count && keys[i]!=key) ++i;
+            if (i==count) {keys[i]=key; weights[i]=0.0; membership[i]=0u; ++count;}
+            weights[i]+=w; membership[i]|=1u<<uint(bricks);
         }
-        vec4 sum=vec4(0.0);
-        for (int i=0;i<count;++i) sum+=weights[i]*rtLamp(pos,grid,normal,ids[i],area);
-        result.rgb+=sum.rgb; result.a=max(result.a,sum.a);
+        ++bricks;
     }
+    for (int i=0;i<count;++i) {
+        uint key=keys[i],hash=rtHash(key),index=0xffffffffu;
+        for (int j=0;j<rtMaxProbes;++j) {
+            ivec2 slot=rtSlot(hash,j);
+            uint stored=texelFetch(rtKeys,slot,0).r;
+            if (stored==key) {
+                index=uint(slot.x+256*slot.y);
+                break;
+            }
+            if (stored==0u) break;
+        }
+        if (index==0xffffffffu) continue;
+        vec4 lamp=rtLamp(pos,grid,normal,index,rtDecodeCell(key),-1);
+        result.rgb+=weights[i]*lamp.rgb;
+        for (int j=0;j<bricks;++j)
+            if ((membership[i]&(1u<<uint(j)))!=0u) coverage[j]=max(coverage[j],lamp.a);
+    }
+    for (int j=0;j<bricks;++j) result.a+=brickWeights[j]*coverage[j];
     // A lamp can leave the captured scene while its receiver is still inside.
     // Transition back to the baked term over the outer local-light radius.
-    return result*(1.0-smoothstep(float(RT_DISTANCE)-min(15.0,float(RT_DISTANCE)*0.25),
-                                  float(RT_DISTANCE),length(pos)));
+    return result*rtLocalFade(pos);
 }

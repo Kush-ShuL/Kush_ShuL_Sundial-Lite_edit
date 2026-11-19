@@ -41,24 +41,15 @@ flat in int materialID;
     in float physics_localWaviness;
 #endif
 
-mat3 calcTbnMatrix(vec2 dCoordDX, vec2 dCoordDY, vec3 position, out vec2 textureScale) {
-    vec3 dPosDX = dFdx(position);
-    vec3 dPosDY = dFdy(position);
-
-    vec3 normal = cross(dPosDX, dPosDY);
-
-    vec3 tangentHelper = dPosDY * dCoordDX.x - dPosDX * dCoordDY.x;
-    vec3 tangent = cross(tangentHelper, normal) / dot(tangentHelper, tangentHelper);
-
-    vec3 bitangentHelper = dPosDY * dCoordDX.y - dPosDX * dCoordDY.y;
-    vec3 bitangent = cross(bitangentHelper, normal) / dot(bitangentHelper, bitangentHelper);
-
-    float tangentLen = inversesqrt(dot(tangent, tangent));
-    float bitangentLen = inversesqrt(dot(bitangent, bitangent));
-
-    textureScale = vec2(tangentLen, bitangentLen);
-
-    return mat3(tangent * tangentLen, bitangent * bitangentLen, normalize(normal));
+mat3 calcTbnMatrix(vec2 dx, vec2 dy, vec3 position) {
+    vec3 px=dFdx(position), py=dFdy(position);
+    vec3 n=cross(px,py);
+    n=dot(n,n)>1e-24 ? normalize(n) : normalize(-position);
+    vec3 t=cross(py*dx.x-px*dy.x,n), b=cross(py*dx.y-px*dy.y,n);
+    vec3 basis=abs(n.y)<0.9 ? vec3(0,1,0) : vec3(1,0,0);
+    t=dot(t,t)>1e-24 ? normalize(t) : normalize(cross(basis,n));
+    b=dot(b,b)>1e-24 ? normalize(b) : cross(n,t);
+    return mat3(t,b,n);
 }
 
 void main() {
@@ -72,11 +63,13 @@ void main() {
 
     vec2 texGradX = dFdx(texlmcoord.st);
     vec2 texGradY = dFdy(texlmcoord.st);
-    vec2 textureScale;
-    mat3 tbnMatrix = calcTbnMatrix(texGradX, texGradY, viewPos.xyz, textureScale);
+    mat3 tbnMatrix = calcTbnMatrix(texGradX, texGradY, viewPos.xyz);
 
     rawData.albedo = albedoData * color;
-    if (materialID != 8192 && materialID != 8194 && rawData.albedo.a < 1.0 / 255.0) discard;
+    bool glass=materialID==8210 || materialID==8211;
+    bool clearGlass=glass && rawData.albedo.a<1.0/255.0;
+    if (!glass && materialID!=8192 && materialID!=8194 && rawData.albedo.a<1.0/255.0) discard;
+    if (clearGlass) rawData.albedo=vec4(1.0,1.0,1.0,0.0);
     rawData.lightmap = texlmcoord.pq;
     rawData.normal = tbnMatrix[2];
     rawData.geoNormal = tbnMatrix[2];
@@ -85,7 +78,9 @@ void main() {
     rawData.porosity = 0.0;
     rawData.emissive = 0.0;
     rawData.materialID = MAT_DEFAULT + MAT_WATER * float(materialID == 8192 || materialID == 8194);
-    rawData.parallaxOffset = 0.0;
+    // Translucent terrain has no POM offset. Carry the glass thickness
+    // here until composite5 consumes it, before the motion/depth passes.
+    rawData.parallaxOffset = materialID==8211 ? 0.125 : (glass ? 1.0 : 0.0);
     rawData.depth = 0.0;
 
     #ifdef MC_SPECULAR_MAP
@@ -166,7 +161,7 @@ void main() {
                 }
             #endif
             #ifdef MC_NORMAL_MAP
-                rawData.normal = NORMAL_FORMAT(normalData.xyz);
+                rawData.normal = clearGlass ? vec3(0,0,1) : NORMAL_FORMAT(normalData.xyz);
                 rawData.normal.xy *= NORMAL_STRENGTH;
             #else
                 rawData.normal = vec3(0.0, 0.0, 1.0);
@@ -180,15 +175,15 @@ void main() {
             rippleNormal.xy *= viewDepthInv / (viewDepthInv + 0.1 * RIPPLE_FADE_SPEED);
         #endif
         rawData.normal.xy += rippleNormal.xy * wetStrength;
-        rawData.normal = normalize(tbnMatrix * rawData.normal);
+        vec3 mapped=tbnMatrix*rawData.normal;
+        rawData.normal=dot(mapped,mapped)>1e-12 ? normalize(mapped) : tbnMatrix[2];
 
         vec3 viewDir = viewPos.xyz * (-viewDepthInv);
         float NdotV = dot(rawData.normal, viewDir);
         vec3 edgeNormal = rawData.normal - viewDir * NdotV;
-        float curveStart = dot(viewDir, rawData.geoNormal);
-        float weight = clamp(curveStart - curveStart * exp(NdotV / curveStart - 1.0), 0.0, 1.0);
-        weight = max(NdotV, curveStart) - weight;
-        rawData.normal = viewDir * weight + edgeNormal * max(0.0, inversesqrt(dot(edgeNormal, edgeNormal) / (1.0 - weight * weight)));
+        float curveStart = clamp(dot(viewDir, rawData.geoNormal),1e-5,1.0);
+        float weight = NdotV < curveStart ? curveStart*exp(NdotV/curveStart-1.0) : min(NdotV,1.0);
+        rawData.normal = viewDir*weight + edgeNormal*sqrt(max(0.0,1.0-weight*weight)/max(dot(edgeNormal,edgeNormal),1e-12));
         float fadeFactor = viewDepthInv * curveStart * gbufferProjection[1].y * srOutputScreenSize.y;
         rawData.normal = mix(tbnMatrix[2], rawData.normal, fadeFactor / (fadeFactor + 0.3));
     #endif

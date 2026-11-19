@@ -96,7 +96,7 @@ void rtInsertTriangle(ivec3 cell, vec3 a, vec3 b, vec3 c, uvec3 uv, uvec2 materi
             ivec3 at=rtSourceSlot(uint(slot.x+256*slot.y));
             uvec3 anchor=uvec3(round(255.0*clamp(sourcePoint,0.0,1.0)));
             uint power=(source>>21u)&127u;
-            imageAtomicMax(rtLightImage,at+ivec3(0,0,64),
+            imageAtomicMax(rtLightImage,at+ivec3(0,0,rtSourceSlices),
                 (power<<24u)|(anchor.y<<16u)|(anchor.x<<8u)|anchor.z);
             uint old=imageLoad(rtLightImage,at).r;
             for (;;) {

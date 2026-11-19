@@ -34,7 +34,7 @@ void main() {
         vec3 irradiance;
         if (giReceiverAt(p,pos,n,depth)) {
             if (giIrradiance(pos,n,irradiance)) diffuseRT = vec4(irradiance,depth);
-            vec4 direct=rtLocalLighting(pos,n,true);
+            vec4 direct=rtDirectLamps(pos,n,rtEmitterPhase(ivec2(gl_FragCoord.xy)));
             directRT=vec4(direct.rgb,depth);
             // Fold any uncovered fraction of the vanilla term into this sample.
             float level=unpack2x8Bit(srTexelFetchLow(colortex2,p,0).r).x;

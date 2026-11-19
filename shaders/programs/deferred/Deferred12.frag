@@ -435,7 +435,7 @@ void main() {
         #ifdef RT_GI
             vec4 tracedBlock = vec4(0.0);
             if (useDiffuseRT) {
-                currData.rgb = resolveDiffuseGI(texcoord, -viewPos.z, gbufferData.geoNormal, prevData.rgb, tracedBlock);
+                currData.rgb = resolveDiffuseGI(texcoord, viewPos, gbufferData.geoNormal, prevData.rgb, tracedBlock);
             }
         #endif
         float blendWeight = clamp(1.0 / colorData.w, 0.0, 1.0);

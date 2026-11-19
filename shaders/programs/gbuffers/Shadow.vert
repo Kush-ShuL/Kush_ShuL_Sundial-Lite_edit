@@ -152,11 +152,14 @@ void main() {
             shadowOffset = vec2(0.0);
         #else
             float isTransparent = float(abs(textureLod(gtexture, mc_midTexCoord.st + 1e-6, 0.0).w - 0.5) + 1e-4 < 0.49) * (1.0 - isWater);
+            // A clear center texel does not make the frame of stained glass
+            // an opaque caster. Both types of glass use the transmission atlas.
+            if (mc_Entity.x==8210 || mc_Entity.x==8211) isTransparent=1.0;
             shadowOffset.x = -isTransparent;
         #endif
 
         gl_Position = gl_ProjectionMatrix * viewPos;
-        float clipLengthInv = inversesqrt(dot(gl_Position.xy, gl_Position.xy));
+        float clipLengthInv = inversesqrt(max(dot(gl_Position.xy, gl_Position.xy),1e-12));
         float shadowDistortion = log(distortionStrength / clipLengthInv + 1.0) / log(distortionStrength + 1.0) * 0.5;
         gl_Position.xy *= max(0.0, clipLengthInv * shadowDistortion);
         gl_Position.xy = gl_Position.xy + 0.5 + shadowOffset;
