@@ -288,7 +288,7 @@ void main() {
                     textureViewer.xy *= textureScale * parallaxScale;
                     #ifdef VOXEL_PARALLAX
                         texcoord = perPixelParallax(
-                            texcoord, textureViewer, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset
+                            texcoord, textureViewer, fixedCoordRange, parallaxTexNormal, parallaxOffset
                         );
                     #else
                         texcoord = calculateParallax(texcoord, textureViewer, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);

@@ -117,54 +117,47 @@ vec4 anisotropicFilter(vec2 coord, vec2 offset, float lod, vec4 coordRange, vec2
         );
     }
 
-    vec2 perPixelParallax(
-        vec2 coord, vec3 viewVector, vec2 albedoTexSize, vec2 atlasTexelSize, vec4 coordRange,
-        inout vec3 parallaxTexNormal, inout float parallaxOffset
-    ) {
-        vec2 parallaxCoord = coord;
-        parallaxOffset = 0.0;
-        float sampleHeight = textureLod(normals, coord, 0.0).a;
-        sampleHeight += clamp(1.0 - sampleHeight * 1e+10, 0.0, 1.0);
-
-        if (sampleHeight < 0.999) {
-            vec3 stepDir = viewVector;
-            stepDir.xy *= PARALLAX_DEPTH * albedoTexSize * 0.2;
-            stepDir = normalize(stepDir);
-            stepDir.z = -stepDir.z;
-
-            coord *= albedoTexSize;
-            ivec2 basicTexel = ivec2(round(coordRange.xy * albedoTexSize));
-            ivec2 sampleTexel = ivec2(floor(coord));
-            vec2 stepLength = abs(1.0 / stepDir.xy);
-            ivec2 dirSigned = (floatBitsToInt(stepDir.xy) >> 31) * 2 + 1;
-            vec2 nextLength = (dirSigned * (0.5 - coord + sampleTexel) + 0.5) * stepLength;
-            ivec2 tileSize = ivec2(round(coordRange.zw * albedoTexSize));
-            sampleHeight = 1.0 - sampleHeight;
-            sampleTexel -= basicTexel;
-
-            for (int i = 0; i < PARALLAX_QUALITY; i++) {
-                float rayLength = min(nextLength.x, nextLength.y);
-                float rayHeight = rayLength * stepDir.z;
-                if (rayHeight > sampleHeight) {
-                    parallaxOffset = sampleHeight;
-                    break;
-                }
-                ivec2 nextPixel = (floatBitsToInt(vec2(rayLength) - nextLength) >> 31) + 1;
-                nextLength += nextPixel * stepLength;
-                sampleTexel += nextPixel * dirSigned;
-                sampleTexel = sampleTexel % tileSize;
-                sampleHeight = texelFetch(normals, sampleTexel + basicTexel, 0).a;
-                sampleHeight += clamp(1.0 - sampleHeight * 1e+10, 0.0, 1.0);
-                sampleHeight = 1.0 - sampleHeight;
-                if (rayHeight > sampleHeight) {
-                    parallaxOffset = rayHeight;
-                    parallaxTexNormal = vec3(-nextPixel * dirSigned, 0.0);
-                    break;
-                }
+    vec2 perPixelParallax(vec2 coord, vec3 viewVector, vec4 coordRange,
+                          inout vec3 parallaxTexNormal, inout float parallaxOffset) {
+        parallaxOffset=0.0;
+        if (viewVector.z>=-1e-6) return coord;
+        vec2 atlas=vec2(textureSize(normals,0));
+        ivec2 base=ivec2(round(coordRange.xy*atlas));
+        ivec2 size=max(ivec2(1),ivec2(round(coordRange.zw*atlas)));
+        vec2 start=clamp(coord*atlas-vec2(base),vec2(0.0),vec2(size)-0.0001);
+        ivec2 cell=ivec2(floor(start));
+        vec2 ray=viewVector.xy*(0.2*PARALLAX_DEPTH/-viewVector.z)*atlas;
+        ray*=min(1.0,float(PARALLAX_QUALITY-2)/max(dot(abs(ray),vec2(1.0)),1e-6));
+        ivec2 stepUV=ivec2(sign(ray));
+        vec2 stride=1.0/max(abs(ray),vec2(1e-12));
+        vec2 next=mix(fract(start),1.0-fract(start),greaterThan(ray,vec2(0)))*stride;
+        next=mix(next,vec2(1e20),equal(stepUV,ivec2(0)));
+        ivec2 unwrapped=cell;
+        float entry=0.0;
+        vec2 wall=vec2(0.0);
+        for (int i=0;i<PARALLAX_QUALITY;++i) {
+            float h=texelFetch(normals,base+cell,0).a;
+            float depth=h==0.0 ? 0.0 : 1.0-h;
+            float edge=min(next.x,next.y);
+            if (depth<=edge) {
+                if (depth<entry) parallaxTexNormal=vec3(wall,0.0);
+                parallaxOffset=max(depth,entry);
+                if (parallaxOffset==0.0) return coord;
+                // Use the intersection UV inside the texel. Snapping every
+                // hit to its centre breaks continuous albedo and normal maps.
+                vec2 local=clamp(start+ray*parallaxOffset-vec2(unwrapped),vec2(0.0001),vec2(0.9999));
+                return (vec2(base+cell)+local)/atlas;
             }
-            parallaxCoord = (sampleTexel + basicTexel + vec2(0.5)) * atlasTexelSize;
+            bvec2 crossEdge=lessThanEqual(next,vec2(edge));
+            ivec2 delta=ivec2(crossEdge)*stepUV;
+            wall=crossEdge.x ? vec2(-stepUV.x,0) : vec2(0,-stepUV.y);
+            unwrapped+=delta;
+            cell+=delta;
+            cell+=size*(ivec2(lessThan(cell,ivec2(0)))-ivec2(greaterThanEqual(cell,size)));
+            next+=vec2(crossEdge)*stride;
+            entry=edge;
         }
-        return parallaxCoord;
+        return coord;
     }
 
     vec2 calculateParallax(

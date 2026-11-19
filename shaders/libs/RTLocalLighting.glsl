@@ -81,9 +81,8 @@ vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint index,ivec3 cell,int phase) {
     vec3 farCorner=abs(t-grid+pos)+extent;
     bool clearPath=dot(farCorner,farCorner)<float(RT_DISTANCE*RT_DISTANCE) && rtClearLampBox(lo,hi);
     vec3 vis;
-    float cosine;
     if (area && clearPath) vis=vec3(rtAreaCosine(t-grid,normal,u,v));
-    else if (area) {
+    else {
         // Four points of a 64-point 2D Sobol net. A 4x4 filter footprint
         // combines all sixteen phases. Keep the pattern fixed between frames.
         uvec3 worldCell=uvec3(ivec3(floor(cameraPosition))+cell-rtGridSize/2);
@@ -93,20 +92,21 @@ vec4 rtLamp(vec3 pos,vec3 grid,vec3 normal,uint index,ivec3 cell,int phase) {
         int p=phase^int(seed&15u);
         int xs=((p&1)<<3)|((p&2)<<1)|((p&4)>>1)|((p&8)>>3);
         int ys=((p&1)*40)^(((p>>1)&1)*60)^(((p>>2)&1)*34)^(((p>>3)&1)*51);
-        for (int j=0;j<2;++j) {
-            int x=j*32+xs, y=(j*32)^ys;
-            vec2 d=(vec2(x,y)+0.5)/32.0-1.0;
-            vec2 e=(vec2(x^16,y^48)+0.5)/32.0-1.0;
-            if ((seed&16u)!=0u) {d=d.yx;e=e.yx;}
-            float ca,cb;
-            vec3 a=rtFaceVisibility(pos,grid,t+d.x*u+d.y*v,cell,normal,false,ca);
-            vec3 b=rtFaceVisibility(pos,grid,t+e.x*u+e.y*v,cell,normal,false,cb);
-            sum+=a*ca+b*cb;totalCosine+=ca+cb;
+        for (int j=0;j<(area ? 4 : 1);++j) {
+            vec3 target=t;
+            if (area) {
+                int halfOffset=(j>>1)*32;
+                int x=(halfOffset+xs)^((j&1)*16), y=halfOffset^ys^((j&1)*48);
+                vec2 d=(vec2(x,y)+0.5)/32.0-1.0;
+                if ((seed&16u)!=0u) d=d.yx;
+                target+=d.x*u+d.y*v;
+            }
+            float cosine;
+            vec3 pass=rtFaceVisibility(pos,grid,target,cell,normal,clearPath,cosine);
+            sum+=pass*cosine;
+            totalCosine+=cosine;
         }
-        vis=sum*(rtAreaCosine(t-grid,normal,u,v)/max(totalCosine,1e-6));
-    } else {
-        vis=rtFaceVisibility(pos,grid,t,cell,normal,clearPath,cosine);
-        vis*=cosine;
+        vis=area ? sum*(rtAreaCosine(t-grid,normal,u,v)/max(totalCosine,1e-6)) : sum;
     }
     float f=VANILLA_BLOCK_LIGHT_FADE;
     float strength=1.0/(f-f*f/(1.0+f)*level)-1.0/f;

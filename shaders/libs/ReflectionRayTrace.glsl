@@ -75,23 +75,29 @@ bool traceRtSurface(vec3 origin, vec3 direction, float budget, bool diffuse, out
 }
 
 bool traceRtSegment(vec3 origin, vec3 direction, float budget, bool diffuse, out RtHit hit) {
-    if (!traceRtSurface(origin, direction, budget, diffuse, hit)) return false;
-    vec3 transmission = hit.transmission;
-    hit.radiance *= hit.opacity;
-    #if RT_BOUNCES > 1
-        hit.specularWeight *= hit.opacity;
-    #endif
-    float travelled = hit.distanceAlongRay;
-    for (int layer = 1; layer < 8 && max(transmission.r,max(transmission.g,transmission.b)) > 0.004; ++layer) {
-        travelled += 0.0005;
+    vec3 transmission=vec3(1.0), radiance=vec3(0.0);
+    float travelled=0.0;
+    bool found=false;
+    // Keep one invocation of the mesh + lighting kernel in the driver IR.
+    for (int layer=0; layer<8; ++layer) {
         vec3 nextOrigin = origin + travelled * direction;
         RtHit next;
-        if (travelled >= budget || !rtInRange(nextOrigin) || !traceRtSurface(nextOrigin, direction, budget - travelled, diffuse, next)) break;
-        hit.radiance += transmission * next.opacity * next.radiance;
-        travelled += next.distanceAlongRay;
+        if (layer!=0 && (travelled>=budget || !rtInRange(nextOrigin))) break;
+        if (!traceRtSurface(nextOrigin,direction,budget-travelled,diffuse,next)) break;
+        if (layer==0) {
+            found=true;
+            hit=next;
+            #if RT_BOUNCES > 1
+                hit.specularWeight*=next.opacity;
+            #endif
+        }
+        radiance+=transmission*next.opacity*next.radiance;
         transmission *= next.transmission;
+        if (max(transmission.r,max(transmission.g,transmission.b))<=0.004) break;
+        travelled+=next.distanceAlongRay+0.0005;
     }
-    return true;
+    hit.radiance=radiance;
+    return found;
 }
 
 vec4 traceVoxelReflection(vec3 origin, vec3 direction, out vec3 firstHitView) {

@@ -25,7 +25,7 @@ layout(location = 2) out vec4 gbufferData2;
 in vec4 texlmcoord;
 in vec3 color;
 in vec3 viewPos;
-in vec4 coordRange;
+flat in vec4 coordRange;
 
 flat in int material;
 
@@ -68,9 +68,6 @@ void main() {
     vec2 albedoTexSize = vec2(textureSize(gtexture, 0));
     vec2 albedoTexelSize = 1.0 / albedoTexSize;
     vec4 fixedCoordRange = coordRange;
-    if (fwidth(coordRange.x) + fwidth(coordRange.y) > 1e-6) {
-        fixedCoordRange = vec4(0.0, 0.0, 1.0, 1.0);
-    }
     vec2 pixelScale = albedoTexSize * textureScale;
     vec2 quadSize = 1.0 / fixedCoordRange.zw;
 
@@ -86,7 +83,7 @@ void main() {
             vec3 textureViewer = viewPos * tbnMatrix;
             textureViewer.xy *= textureScale;
             #ifdef VOXEL_PARALLAX
-                texcoord = perPixelParallax(texcoord, textureViewer, albedoTexSize, albedoTexelSize, fixedCoordRange, parallaxTexNormal, parallaxOffset);
+                texcoord = perPixelParallax(texcoord, textureViewer, fixedCoordRange, parallaxTexNormal, parallaxOffset);
             #else
                 texcoord = calculateParallax(texcoord, textureViewer, fixedCoordRange, quadSize, albedoTexSize, albedoTexelSize, parallaxOffset);
             #endif

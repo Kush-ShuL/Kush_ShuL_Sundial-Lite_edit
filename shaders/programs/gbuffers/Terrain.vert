@@ -31,7 +31,7 @@ layout(location = 11) in vec4 mc_midTexCoord;
 out vec4 texlmcoord;
 out vec3 color;
 out vec3 viewPos;
-out vec4 coordRange;
+flat out vec4 coordRange;
 
 flat out int material;
 
@@ -41,6 +41,7 @@ flat out int material;
 #include "/libs/Uniform.glsl"
 #include "/libs/Common.glsl"
 #include "/libs/GbufferData.glsl"
+#include "/libs/AtlasQuad.glsl"
 
 uniform vec3 cameraPositionFract;
 
@@ -137,19 +138,7 @@ void main() {
     viewPos = worldToViewPos(worldPos);
     gl_Position = gl_ProjectionMatrix * vec4(viewPos, 1.0);
 
-    vec2 minCoord = vec2(0.0);
-    vec2 coordSize = vec2(1.0);
-    vec2 vertexCoord = gl_MultiTexCoord0.st;
-    if (min(abs(mc_midTexCoord.s - gl_MultiTexCoord0.s), abs(mc_midTexCoord.t - gl_MultiTexCoord0.t)) < 1e-6) {
-        vertexCoord = gl_MultiTexCoord0.st + (mc_midTexCoord.st - gl_MultiTexCoord0.st).ts;
-    }
-    vec2 albedoTexSize = textureSize(gtexture, 0);
-    vec2 albedoTexelSize = 1.0 / albedoTexSize;
-    vec2 midCoord = mc_midTexCoord.st * albedoTexSize;
-    vec2 coordToCenter = abs(vertexCoord - mc_midTexCoord.st) * albedoTexSize;
-    minCoord = floor(midCoord - coordToCenter) * albedoTexelSize;
-    coordSize = ceil(midCoord + coordToCenter) * albedoTexelSize - minCoord;
-    coordRange = vec4(minCoord, coordSize);
+    coordRange=atlasQuadBounds(gl_MultiTexCoord0.st,mc_midTexCoord.st,vec2(textureSize(gtexture,0)));
 
 
     #if defined TAA || defined HELIAN_SR_JITTER
