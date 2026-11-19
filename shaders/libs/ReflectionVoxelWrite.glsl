@@ -17,76 +17,111 @@ uint rtSourceColor(uint level, vec3 color) {
 layout(rgba8) writeonly uniform image2D rtEntityColorImage;
 layout(r32ui) uniform uimage2D rtEntityTileCount;
 
-// The entity's bound texture (skins, equipment or display items) is available
-// at draw time only. Keep a tile in barycentric coordinates with this triangle.
-uint captureEntityTile() {
+// Only the shadow draw has the bound skin/item texture. Copy its texel
+// rectangle, not a resampling of the triangle in barycentric coordinates.
+uint captureEntityTile(out uvec3 packedUV) {
     uint tile = imageAtomicAdd(rtEntityTileCount, ivec2(0), 1u);
-    if (tile >= 32768u) return 0u;
-    ivec2 base = 8 * ivec2(tile & 255u, tile >> 8u);
+    if (tile >= rtEntityTileLimit) return 0u;
+    vec2 size=vec2(textureSize(gtexture,0));
+    vec2 p0=rtUV[0]*size,p1=rtUV[1]*size,p2=rtUV[2]*size;
+    vec2 lo=floor(min(p0,min(p1,p2)));
+    vec2 extent=max(ceil(max(p0,max(p1,p2)))-lo,1.0);
     vec3 center = (rtPosition[0]+rtPosition[1]+rtPosition[2])/3.0;
     float d2 = dot(center,center);
-    vec2 span = (max(rtUV[0],max(rtUV[1],rtUV[2])) - min(rtUV[0],min(rtUV[1],rtUV[2]))) * textureSize(gtexture,0);
-    int side = min(d2 > 576.0 ? 2 : (d2 > 64.0 ? 4 : 8), max(1,int(ceil(max(span.x,span.y)))));
-    for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
-        vec2 bc = side == 1 ? vec2(1.0/3.0) : vec2(x, y) / float(side-1);
-        if (bc.x + bc.y > 1.0) bc /= bc.x + bc.y;
-        vec3 w = vec3(1.0 - bc.x - bc.y, bc);
-        bool textBackground=rtModelId[0]==7004 && all(lessThan(span,vec2(0.001)));
-        vec4 sampleColor = textBackground ? vec4(1.0) : textureLod(gtexture, rtUV[0]*w.x + rtUV[1]*w.y + rtUV[2]*w.z, 0.0);
-        sampleColor.a *= dot(w, vec3(rtVertexAlpha[0], rtVertexAlpha[1], rtVertexAlpha[2]));
-        imageStore(rtEntityColorImage, base + ivec2(x, y), vec4(sampleColor.rgb * sampleColor.a, sampleColor.a));
+    ivec2 dim=ivec2(min(extent,vec2(d2>576.0 ? 8.0 : (d2>144.0 ? 16.0 : 32.0))));
+    uint base=16u*tile, count=uint(dim.x*dim.y);
+    if (count>16u) {
+        uint offset=imageAtomicAdd(rtEntityTileCount,ivec2(1,0),count);
+        if (offset+count<=2048u*1024u-rtEntityDetailStart) base=rtEntityDetailStart+offset;
+        else dim=min(dim,ivec2(4));
     }
-    return (tile + 1u) | (uint(side - 1) << 16u);
+    for (int i=0;i<3;++i) {
+        uvec2 local=uvec2(round(clamp((rtUV[i]*size-lo)/extent,0.0,1.0)*4095.0));
+        packedUV[i]=local.x|(local.y<<12u)|(uint(round(clamp(rtVertexAlpha[i],0.0,1.0)*255.0))<<24u);
+    }
+    bool textBackground=rtModelId[0]==7004 && all(lessThan(max(p0,max(p1,p2))-min(p0,min(p1,p2)),vec2(0.001)));
+    for (int y=0;y<dim.y;++y) for (int x=0;x<dim.x;++x) {
+        vec2 texel=lo+floor((vec2(x,y)+0.5)*extent/vec2(dim));
+        vec4 color=textBackground ? vec4(1.0) : textureLod(gtexture,(texel+0.5)/size,0.0);
+        imageStore(rtEntityColorImage,rtEntityPixel(base+uint(y*dim.x+x)),color);
+    }
+    return (base+1u)|(uint(dim.x-1)<<22u)|(uint(dim.y-1)<<27u);
 }
 #endif
 
-// One sparse list per grid cell. Opposing faces, stair treads and fence rails
-// can all coexist; no triangle takes ownership of an entire block face.
-void rtInsertTriangle(ivec3 cell, vec3 a, vec3 b, vec3 c, uvec3 uv, uvec2 material, uint tile, uint source, vec3 sourcePoint) {
+ivec2 rtClaimCell(ivec3 cell) {
     uint key = rtCellKey(cell), hash = rtHash(key);
     for (int probe = 0; probe < rtMaxProbes; ++probe) {
         ivec2 slot = rtSlot(hash, probe);
         uint previous = imageAtomicCompSwap(rtKeyImage, slot, 0u, key);
-        if (previous != 0u && previous != key) continue;
-        // Publish occupancy once, even if another invocation gets the last
-        // triangle allocation before this one.
-        if (previous==0u) imageAtomicOr(rtBrickImage,cell>>3,rtSubBrickBit(cell)|rtAxisBits(cell));
-        #if defined RT_GI && !defined RT_ENTITY_GEOMETRY
-            if (source!=0u) {
-                uint face=0u;
-                // A torch foot or a lantern base is not a full emitting face.
-                vec3 extent=max(a,max(b,c))-min(a,min(b,c));
-                for (int axis=0;axis<3;++axis) {
-                    if (min(extent[(axis+1)%3],extent[(axis+2)%3])<0.82) continue;
-                    if (max(a[axis],max(b[axis],c[axis]))<0.001 && min(a[axis],min(b[axis],c[axis]))>-0.001)
-                        face |= 1u<<uint(2*axis);
-                    if (min(a[axis],min(b[axis],c[axis]))>0.999 && max(a[axis],max(b[axis],c[axis]))<1.001)
-                        face |= 2u<<uint(2*axis);
-                }
-                ivec3 at=rtSourceSlot(uint(slot.x+256*slot.y));
-                uvec3 anchor=uvec3(round(255.0*clamp(sourcePoint,0.0,1.0)));
-                uint power=(source>>21u)&127u;
-                imageAtomicMax(rtLightImage,at+ivec3(0,0,64),
-                    (power<<24u)|(anchor.y<<16u)|(anchor.x<<8u)|anchor.z);
-                uint old=imageLoad(rtLightImage,at).r;
-                for (;;) {
-                    uint value=max(old & ~63u,source) | (old & 63u) | face;
-                    if (value==old) break;
-                    uint seen=imageAtomicCompSwap(rtLightImage,at,old,value);
-                    if (seen==old) break;
-                    old=seen;
-                }
+        if (previous==0u || previous==key) return slot;
+    }
+    return ivec2(-1);
+}
+
+// Tag the plane and right-angle corner of an exact half-square, retaining
+// the original first vertex for the texture footprint under upscaling.
+uint rtUnitFace(vec3 a,vec3 b,vec3 c,inout uvec3 uv) {
+    if (any(notEqual(a,clamp(round(a),0.0,1.0))) ||
+        any(notEqual(b,clamp(round(b),0.0,1.0))) ||
+        any(notEqual(c,clamp(round(c),0.0,1.0)))) return 0u;
+    ivec3 v=ivec3(dot(a,vec3(1,2,4)),dot(b,vec3(1,2,4)),dot(c,vec3(1,2,4)));
+    int span=(v.x^v.y)|(v.x^v.z);
+    int axis=span==6 ? 0 : (span==5 ? 1 : (span==3 ? 2 : -1));
+    if (axis<0 || v.x==v.y || v.y==v.z || v.z==v.x) return 0u;
+    int r=(v.y^v.z)==span ? 0 : ((v.z^v.x)==span ? 1 : 2);
+    int u=(axis+1)%3, h=(r+1)%3, k=(r+2)%3;
+    if ((v[r]^v[h])!=(1<<u)) {int tmp=h;h=k;k=tmp;}
+    uv=uvec3(uv[r],uv[h],uv[k]);
+    uint first=r==0 ? 0u : (h==0 ? 1u : 2u);
+    return uint(axis+1)|(uint((v[r]>>axis)&1)<<2u)|(uint((v[r]>>u)&1)<<3u)|
+           (uint((v[r]>>((u+1)%3))&1)<<4u)|(first<<5u);
+}
+
+void rtInsertTriangle(ivec3 cell, vec3 a, vec3 b, vec3 c, uvec3 uv, uvec2 material, uint tile, uint source, vec3 sourcePoint) {
+    ivec2 slot=rtClaimCell(cell);
+    if (slot.x<0) return;
+    #if defined RT_GI && !defined RT_ENTITY_GEOMETRY
+        if (source!=0u) {
+            uint face=0u;
+            // A torch foot or a lantern base is not a full emitting face.
+            vec3 extent=max(a,max(b,c))-min(a,min(b,c));
+            for (int axis=0;axis<3;++axis) {
+                if (min(extent[(axis+1)%3],extent[(axis+2)%3])<0.82) continue;
+                if (max(a[axis],max(b[axis],c[axis]))<0.001 && min(a[axis],min(b[axis],c[axis]))>-0.001)
+                    face |= 1u<<uint(2*axis);
+                if (min(a[axis],min(b[axis],c[axis]))>0.999 && max(a[axis],max(b[axis],c[axis]))<1.001)
+                    face |= 2u<<uint(2*axis);
             }
-        #endif
-        uint index = imageAtomicAdd(rtTriangleCount, ivec2(0), 1u);
-        if (index >= 384u * uint(RT_CACHE_K)) return;
-        uint next = imageAtomicExchange(rtHeadImage, slot, index + 1u);
-        ivec2 dst = rtTriangleSlot(index);
-        imageStore(rtTriangleImage, dst, uvec4(packHalf2x16(a.xy), packHalf2x16(vec2(a.z, b.x)), packHalf2x16(b.yz), next));
-        imageStore(rtTriangleImage, dst + ivec2(1, 0), uvec4(packHalf2x16(c.xy), floatBitsToUint(c.z), uv.xy));
-        imageStore(rtTriangleImage, dst + ivec2(2, 0), uvec4(uv.z, material, tile));
+            ivec3 at=rtSourceSlot(uint(slot.x+256*slot.y));
+            uvec3 anchor=uvec3(round(255.0*clamp(sourcePoint,0.0,1.0)));
+            uint power=(source>>21u)&127u;
+            imageAtomicMax(rtLightImage,at+ivec3(0,0,64),
+                (power<<24u)|(anchor.y<<16u)|(anchor.x<<8u)|anchor.z);
+            uint old=imageLoad(rtLightImage,at).r;
+            for (;;) {
+                uint value=max(old & ~63u,source) | (old & 63u) | face;
+                if (value==old) break;
+                uint seen=imageAtomicCompSwap(rtLightImage,at,old,value);
+                if (seen==old) break;
+                old=seen;
+            }
+        }
+    #endif
+    uint index=imageAtomicAdd(rtTriangleCount,ivec2(0),1u);
+    if (index>=384u*uint(RT_CACHE_K)) return;
+    uint next=imageAtomicExchange(rtHeadImage,slot,index+1u);
+    if (next==0u) imageAtomicOr(rtBrickImage,cell>>3,rtSubBrickBit(cell)|rtAxisBits(cell));
+    ivec2 dst=rtTriangleSlot(index);
+    uint face=tile==0u ? rtUnitFace(a,b,c,uv) : 0u;
+    if (face!=0u) {
+        imageStore(rtTriangleImage,dst,uvec4(uv,(face<<24u)|next));
+        imageStore(rtTriangleImage,dst+ivec2(1,0),uvec4(material,0u,0u));
         return;
     }
+    imageStore(rtTriangleImage,dst,uvec4(packHalf2x16(a.xy),packHalf2x16(vec2(a.z,b.x)),packHalf2x16(b.yz),next));
+    imageStore(rtTriangleImage,dst+ivec2(1,0),uvec4(packHalf2x16(c.xy),floatBitsToUint(c.z),uv.xy));
+    imageStore(rtTriangleImage,dst+ivec2(2,0),uvec4(uv.z,material,tile));
 }
 
 void captureReflectionTriangle() {
@@ -143,7 +178,7 @@ void captureReflectionTriangle() {
         }
     #endif
     #ifdef RT_ENTITY_GEOMETRY
-        tile = captureEntityTile();
+        tile = captureEntityTile(uv);
         if (tile == 0u) return;
     #endif
     for (int z = first.z; z <= last.z; ++z)

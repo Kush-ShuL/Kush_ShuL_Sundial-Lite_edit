@@ -3,6 +3,16 @@ const int rtGridSize = 2 * RT_DISTANCE + 8;
 const uint rtCacheMask = 256u * uint(RT_CACHE_K) - 1u;
 const int rtMaxProbes = 12;
 
+#if defined RT_ENTITIES || defined RT_ENTITY_GEOMETRY
+// The first quarter of the 2048x1024 RGBA8 image guarantees a small tile
+// per triangle. The rest holds larger, tightly packed native-UV rectangles.
+const uint rtEntityTileLimit=32768u;
+const uint rtEntityDetailStart=16u*rtEntityTileLimit;
+ivec2 rtEntityPixel(uint index) {
+    return ivec2(index&2047u,index>>11u);
+}
+#endif
+
 uint rtCellKey(ivec3 cell) {
     return uint((cell.z * rtGridSize + cell.y) * rtGridSize + cell.x + 1);
 }

@@ -63,23 +63,10 @@ in vec2 texcoord;
     layout(location = 1) out vec2 srSpecularMotion;
     /*
     const int colortex15Format = RG16F;
+    const int colortex27Format = RG16F;
     */
 
-    vec2 srReflectionMotionVector(vec3 currentView, bool infiniteRay) {
-        vec3 previousView;
-        if (infiniteRay) {
-            previousView = mat3(gbufferPreviousModelView) * mat3(gbufferModelViewInverse) * currentView;
-        } else {
-            previousView = prevWorldToViewPos(viewToWorldPos(currentView) + cameraMovement);
-        }
-        float pointW = infiniteRay ? 0.0 : 1.0;
-        vec4 currentClip = gbufferProjection * vec4(currentView, pointW);
-        vec4 previousClip = gbufferPreviousProjection * vec4(previousView, pointW);
-        if (currentClip.w <= 1e-6 || previousClip.w <= 1e-6) return vec2(0.0);
-        // The projection matrices are unjittered. SR wants UV displacement,
-        // previous minus current, with the OpenGL Y direction retained.
-        return clamp(0.5 * (previousClip.xy / previousClip.w - currentClip.xy / currentClip.w), -1.0, 1.0);
-    }
+    #include "/libs/ReflectionMotion.glsl"
 #endif
 
 
@@ -204,6 +191,9 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
             float rayLength = 114514.0;
             reflectionColor = vec4(vec3(0.0), rayLength);
             #ifdef SHADOW_AND_SKY
+                #ifdef LIGHT_LEAKING_FIX
+                if (eyeBrightnessSmooth.y>0) {
+                #endif
                 vec3 atmosphere;
                 reflectionColor.rgb = singleAtmosphereScattering(vec3(0.0), worldPos, rayDir, sunDirection, intersectionData, 30.0, atmosphere);
                 vec4 planeCloud = vec4(0.0);
@@ -220,6 +210,7 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
                 }
                 #ifdef LIGHT_LEAKING_FIX
                     reflectionColor.rgb *= clamp(eyeBrightnessSmooth.y / 16.0, 0.0, 1.0);
+                }
                 #endif
             #endif
             #endif
@@ -259,8 +250,8 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
     return reflectionColor;
 }
 
-vec4 reflection(GbufferData surface, vec3 f0, vec3 f82, float firstWeight) {
-    vec3 viewPos = reflectionViewPosition(texcoord, surface.depth);
+vec4 reflection(GbufferData surface, vec3 f0, vec3 f82, float firstWeight, vec2 receiverUV) {
+    vec3 viewPos = reflectionViewPosition(receiverUV, surface.depth);
     vec3 viewDir = normalize(viewPos);
     vec3 biasedView = viewPos + surface.geoNormal * 0.003;
     bool useRt = false;
@@ -276,7 +267,7 @@ vec4 reflection(GbufferData surface, vec3 f0, vec3 f82, float firstWeight) {
         noiseFrame = 0u;
     #endif
     #ifdef HALF_RES_REFLECTION
-        NoiseGenerator rng = initNoiseGenerator(uvec2(texcoord * screenSize), noiseFrame);
+        NoiseGenerator rng = initNoiseGenerator(uvec2(receiverUV * screenSize), noiseFrame);
     #else
         NoiseGenerator rng = initNoiseGenerator(uvec2(gl_FragCoord.st), noiseFrame);
     #endif
@@ -285,29 +276,31 @@ vec4 reflection(GbufferData surface, vec3 f0, vec3 f82, float firstWeight) {
         if (useRt && surface.smoothness < 0.99)
             seed = fract(seed + float(frameCounter & 15) * vec2(0.61803399, 0.4375));
     #endif
-    vec4 result = reflectionSample(surface, f0, f82, firstWeight, biasedView, viewDir, seed, useRt);
     #if defined HELIAN_VOXEL_RT && RT_SAMPLES > 1
-        // Perfect mirrors have only one direction, even at higher sample counts.
-        if (useRt && surface.smoothness < 0.99) {
-            #ifdef HELIAN_SR_RR
-                vec2 selectedMotion = srSpecularMotion;
-            #endif
-            for (int i = 1; i < RT_SAMPLES; ++i) {
-                vec2 sampleNoise = fract(seed + float(i) * vec2(0.61803399, 1.0 / float(RT_SAMPLES)));
-                vec4 ray = reflectionSample(surface, f0, f82, firstWeight, biasedView, viewDir, sampleNoise, true);
-                result.rgb += ray.rgb;
-                if (ray.w > 0.0 && (result.w == 0.0 || ray.w < result.w)) {
-                    result.w = ray.w;
-                    #ifdef HELIAN_SR_RR
-                        selectedMotion = srSpecularMotion;
-                    #endif
-                }
+        int samples=useRt && surface.smoothness<0.99 ? RT_SAMPLES : 1;
+        vec4 result=vec4(0.0);
+        #ifdef HELIAN_SR_RR
+            vec2 selectedMotion=srSpecularMotion;
+        #endif
+        // One tracing loop for both the first ray and the remaining rough
+        // samples. Keep the nearest valid hit and its matching motion vector.
+        for (int i=0;i<samples;++i) {
+            vec2 noise=i==0 ? seed : fract(seed+float(i)*vec2(0.61803399,1.0/float(RT_SAMPLES)));
+            vec4 ray=reflectionSample(surface,f0,f82,firstWeight,biasedView,viewDir,noise,useRt);
+            result.rgb+=ray.rgb;
+            if (i==0 || (ray.w>0.0 && (result.w==0.0 || ray.w<result.w))) {
+                result.w=ray.w;
+                #ifdef HELIAN_SR_RR
+                    selectedMotion=srSpecularMotion;
+                #endif
             }
-            result.rgb /= float(RT_SAMPLES);
-            #ifdef HELIAN_SR_RR
-                srSpecularMotion = selectedMotion;
-            #endif
         }
+        result.rgb/=float(samples);
+        #ifdef HELIAN_SR_RR
+            srSpecularMotion=selectedMotion;
+        #endif
+    #else
+        vec4 result=reflectionSample(surface,f0,f82,firstWeight,biasedView,viewDir,seed,useRt);
     #endif
     return result;
 }
@@ -321,30 +314,33 @@ void main() {
         #endif
     #endif
     #ifdef HALF_RES_REFLECTION
-        ivec2 texel = clamp(ivec2(texcoord * screenSize), ivec2(0), ivec2(screenSize) - 1);
+        vec2 reflectionSize=vec2(srTextureSizeLow(colortex8,0));
+        ivec2 texel=clamp(ivec2(gl_FragCoord.xy/reflectionSize*screenSize),ivec2(0),ivec2(screenSize)-1);
+        vec2 receiverUV=(vec2(texel)+0.5)/screenSize;
     #else
-        ivec2 texel = ivec2(gl_FragCoord.st);
+        ivec2 texel=ivec2(gl_FragCoord.st);
+        vec2 receiverUV=texcoord;
     #endif
     #ifdef HELIAN_SR_RR
         srSpecularMotion = vec2(0.0);
     #endif
-    float waterDepth = srTextureLodLow(depthtex0, texcoord, 0.0).r;
-    float solidDepth = srTextureLodLow(depthtex1, texcoord, 0.0).r;
+    float waterDepth = srTextureLodLow(depthtex0, receiverUV, 0.0).r;
+    float solidDepth = srTextureLodLow(depthtex1, receiverUV, 0.0).r;
     #ifdef LOD
-        waterDepth += float(waterDepth == 1.0) * getLodDepthWater(texcoord);
-        solidDepth += float(solidDepth == 1.0) * getLodDepthSolid(texcoord);
+        waterDepth += float(waterDepth == 1.0) * getLodDepthWater(receiverUV);
+        solidDepth += float(solidDepth == 1.0) * getLodDepthSolid(receiverUV);
     #endif
     #ifdef HELIAN_SR_RR
         vec3 motionView;
         bool motionSky = waterDepth >= 1.0;
         #ifdef LOD
             if (waterDepth > 1.0) {
-                motionView = screenToViewPosLod(texcoord, waterDepth - 1.0);
+                motionView = screenToViewPosLod(receiverUV, waterDepth - 1.0);
                 motionSky = waterDepth >= 2.0;
             } else
         #endif
         {
-            motionView = screenToViewPos(texcoord, waterDepth);
+            motionView = screenToViewPos(receiverUV, waterDepth);
         }
         srSpecularMotion = srReflectionMotionVector(motionView, motionSky);
     #endif
@@ -394,10 +390,10 @@ void main() {
 
             #ifdef HELIAN_SR_RR
                 if (waterDepth < 1.0 || (waterDepth > 1.0 && waterDepth < 2.0))
-                    srSpecularMotion = srReflectionMotionVector(reflectionViewPosition(texcoord, gbufferData.depth), false);
+                    srSpecularMotion = srReflectionMotionVector(reflectionViewPosition(receiverUV, gbufferData.depth), false);
             #endif
             if (reflectionStrength > 1e-5 && waterDepth - float(waterDepth > 1.0) < 1.0) {
-                reflectionColor = reflection(gbufferData, f0, f82, reflectionStrength);
+                reflectionColor = reflection(gbufferData, f0, f82, reflectionStrength, receiverUV);
             }
         }
     #endif
@@ -410,7 +406,11 @@ void main() {
 }
 
 #ifdef HALF_RES_REFLECTION
-    /* DRAWBUFFERS:8 */
+    #ifdef HELIAN_SR_RR
+        /* RENDERTARGETS: 8,27 */
+    #else
+        /* DRAWBUFFERS:8 */
+    #endif
 #else
     #ifdef HELIAN_SR_RR
         /* RENDERTARGETS: 4,15 */

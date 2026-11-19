@@ -36,46 +36,67 @@ bool rtIntersectCell(uint head, vec3 origin, vec3 ray, float tMin, float tMax,bo
     while (head != 0u) {
         ivec2 slot = rtTriangleSlot(head - 1u);
         uvec4 p = texelFetch(rtTriangles, slot, 0);
-        uvec4 q = texelFetchOffset(rtTriangles, slot, 0, ivec2(1, 0));
-        head = p.w;
-        vec2 azbx = unpackHalf2x16(p.y);
-        vec3 a = vec3(unpackHalf2x16(p.x), azbx.x);
-        vec3 e1 = vec3(azbx.y, unpackHalf2x16(p.z)) - a;
-        vec3 e2 = vec3(unpackHalf2x16(q.x), uintBitsToFloat(q.y)) - a;
-        // Project shared vertices with the same shear on both triangles.
-        // Opposite edge functions then agree even on the diagonal of a quad.
-        vec3 ar=abs(ray);
-        int z=ar.x>ar.y && ar.x>ar.z ? 0 : (ar.y>ar.z ? 1 : 2);
-        int x=(z+1)%3,y=(z+2)%3;
-        vec2 shear=vec2(ray[x],ray[y])/ray[z];
-        vec3 va=a-origin, vb=vec3(azbx.y,unpackHalf2x16(p.z))-origin;
-        vec3 vc=vec3(unpackHalf2x16(q.x),uintBitsToFloat(q.y))-origin;
-        vec2 A=vec2(va[x],va[y])-shear*va[z], B=vec2(vb[x],vb[y])-shear*vb[z], C=vec2(vc[x],vc[y])-shear*vc[z];
-        vec3 w=vec3(B.x*C.y-B.y*C.x,C.x*A.y-C.y*A.x,A.x*B.y-A.y*B.x);
-        float det=w.x+w.y+w.z;
-        if (abs(det)<1e-9 || any(lessThan(w*sign(det),vec3(-2e-6*abs(det))))) continue;
-        w/=det;
-        vec3 uvt=vec3(w.yz,dot(w,vec3(va[z],vb[z],vc[z]))/ray[z]);
-        if (uvt.z<tMin || uvt.z>distanceAlongRay) continue;
-        uvec4 m = texelFetchOffset(rtTriangles, slot, 0, ivec2(2, 0));
-        vec2 uv0 = unpackUnorm2x16(q.z), uv1 = unpackUnorm2x16(q.w), uv2 = unpackUnorm2x16(m.x);
-        vec2 uv = uv0 + uvt.x * (uv1 - uv0) + uvt.y * (uv2 - uv0);
-        ivec2 size = textureSize(rtBlockAtlas, 0);
-        // Keep exact edge hits on this triangle's atlas rectangle.
-        ivec2 lo = ivec2(floor(min(uv0, min(uv1, uv2)) * vec2(size) + 0.25));
-        ivec2 hi = ivec2(ceil(max(uv0, max(uv1, uv2)) * vec2(size) - 0.25)) - 1;
-        ivec2 pixel = clamp(ivec2(uv * vec2(size)), lo, max(lo, hi));
+        uint face=p.w>>24u;
+        head=p.w&0x00ffffffu;
+        vec3 e1,e2,uvt;
+        uvec4 m;
+        uvec3 packedUV;
+        int axis=int(face&3u)-1;
+        if (face!=0u) {
+            if (ray[axis]==0.0) continue;
+            float t=(float((face>>2u)&1u)-origin[axis])/ray[axis];
+            if (t<tMin || t>distanceAlongRay) continue;
+            int u=(axis+1)%3,v=(u+1)%3;
+            vec2 xy=vec2(origin[u],origin[v])+t*vec2(ray[u],ray[v]);
+            xy=mix(xy,1.0-xy,bvec2((face&8u)!=0u,(face&16u)!=0u));
+            if (min(xy.x,xy.y)<-2e-6 || xy.x+xy.y>1.000002) continue;
+            uvt=vec3(xy,t);
+            packedUV=p.xyz;
+            m=uvec4(0u,texelFetchOffset(rtTriangles,slot,0,ivec2(1,0)).xy,0u);
+        } else {
+            uvec4 q = texelFetchOffset(rtTriangles, slot, 0, ivec2(1, 0));
+            vec2 azbx = unpackHalf2x16(p.y);
+            vec3 a = vec3(unpackHalf2x16(p.x), azbx.x);
+            e1 = vec3(azbx.y, unpackHalf2x16(p.z)) - a;
+            e2 = vec3(unpackHalf2x16(q.x), uintBitsToFloat(q.y)) - a;
+            // Project shared vertices with the same shear on both triangles.
+            // Opposite edge functions then agree even on the diagonal of a quad.
+            vec3 ar=abs(ray);
+            int z=ar.x>ar.y && ar.x>ar.z ? 0 : (ar.y>ar.z ? 1 : 2);
+            int x=(z+1)%3,y=(z+2)%3;
+            vec2 shear=vec2(ray[x],ray[y])/ray[z];
+            vec3 va=a-origin, vb=vec3(azbx.y,unpackHalf2x16(p.z))-origin;
+            vec3 vc=vec3(unpackHalf2x16(q.x),uintBitsToFloat(q.y))-origin;
+            vec2 A=vec2(va[x],va[y])-shear*va[z], B=vec2(vb[x],vb[y])-shear*vb[z], C=vec2(vc[x],vc[y])-shear*vc[z];
+            vec3 w=vec3(B.x*C.y-B.y*C.x,C.x*A.y-C.y*A.x,A.x*B.y-A.y*B.x);
+            float det=w.x+w.y+w.z;
+            if (abs(det)<1e-9 || any(lessThan(w*sign(det),vec3(-2e-6*abs(det))))) continue;
+            w/=det;
+            uvt=vec3(w.yz,dot(w,vec3(va[z],vb[z],vc[z]))/ray[z]);
+            if (uvt.z<tMin || uvt.z>distanceAlongRay) continue;
+            m = texelFetchOffset(rtTriangles, slot, 0, ivec2(2, 0));
+            packedUV=uvec3(q.zw,m.x);
+        }
         vec4 albedo;
         #ifdef RT_ENTITIES
         if (m.w != 0u) {
-            uint tile = (m.w & 65535u) - 1u;
-            vec2 pos = vec2(8u * uvec2(tile & 255u, tile >> 8u)) + 0.5 + float(m.w >> 16u) * clamp(uvt.xy, 0.0, 1.0);
-            albedo = textureLod(rtEntityColors, pos / vec2(textureSize(rtEntityColors, 0)), 0.0);
+            vec3 w=vec3(1.0-uvt.x-uvt.y,uvt.xy);
+            vec2 local=vec2(dot(w,vec3(packedUV&4095u)),dot(w,vec3((packedUV>>12u)&4095u)))/4095.0;
+            ivec2 dim=ivec2((m.w>>22u)&31u,m.w>>27u)+1;
+            ivec2 xy=clamp(ivec2(local*vec2(dim)),ivec2(0),dim-1);
+            uint address=(m.w&0x3fffffu)-1u+uint(xy.y*dim.x+xy.x);
+            albedo=texelFetch(rtEntityColors,rtEntityPixel(address),0);
+            albedo.a*=clamp(dot(w,vec3(packedUV>>24u))/255.0,0.0,1.0);
             if (albedo.a < 1.0 / 255.0) continue;
-            albedo.rgb /= albedo.a;
         } else
         #endif
         {
+            vec2 uv0=unpackUnorm2x16(packedUV.x), uv1=unpackUnorm2x16(packedUV.y), uv2=unpackUnorm2x16(packedUV.z);
+            vec2 uv=uv0+uvt.x*(uv1-uv0)+uvt.y*(uv2-uv0);
+            ivec2 size=textureSize(rtBlockAtlas,0);
+            ivec2 lo=ivec2(floor(min(uv0,min(uv1,uv2))*vec2(size)+0.25));
+            ivec2 hi=ivec2(ceil(max(uv0,max(uv1,uv2))*vec2(size)-0.25))-1;
+            ivec2 pixel=clamp(ivec2(uv*vec2(size)),lo,max(lo,hi));
             albedo = texelFetch(rtBlockAtlas, clamp(pixel, ivec2(0), size - 1), 0);
             bool glass = (m.z & 1u) != 0u;
             if (albedo.a < (glass ? 1.0/255.0 : 0.5)) continue;
@@ -84,7 +105,10 @@ bool rtIntersectCell(uint head, vec3 origin, vec3 ray, float tMin, float tMax,bo
                 if (!visibility || glass) {
                 float footprint = uvt.z * 2.0 / max(abs(gbufferProjection[1].y) * screenSize.y, 1.0);
                 vec2 atlas = vec2(size);
-                float density = max(length((uv1-uv0)*atlas)/max(length(e1),0.001), length((uv2-uv0)*atlas)/max(length(e2),0.001));
+                vec2 duv=vec2(length((uv1-uv0)*atlas),length((uv2-uv0)*atlas));
+                if (face==0u) duv/=max(vec2(length(e1),length(e2)),vec2(0.001));
+                else if ((face>>5u)!=0u) duv[(face>>5u)==1u ? 1 : 0]=length((uv2-uv1)*atlas)*0.70710678;
+                float density=max(duv.x,duv.y);
                 float mip = clamp(log2(max(1.0, density * footprint)), 0.0, floor(log2(float(max(1, min(hi.x-lo.x+1, hi.y-lo.y+1))))));
                 vec2 margin = vec2(0.5 * exp2(ceil(mip)));
                 vec2 center = (vec2(lo + hi) + 1.0) * 0.5;
@@ -97,8 +121,8 @@ bool rtIntersectCell(uint head, vec3 origin, vec3 ray, float tMin, float tMax,bo
         found = true;
         distanceAlongRay = uvt.z;
         if (!visibility) {
-            vec3 gn=normalize(cross(e1,e2));
-            normal=faceforward(gn,ray,gn);
+            if (face!=0u) {normal=vec3(0.0);normal[axis]=-sign(ray[axis]);}
+            else {vec3 gn=normalize(cross(e1,e2));normal=faceforward(gn,ray,gn);}
         }
         color = albedo;
         material = m.yz;

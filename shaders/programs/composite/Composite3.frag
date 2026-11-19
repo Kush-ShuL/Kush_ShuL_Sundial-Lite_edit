@@ -34,21 +34,41 @@ layout(location = 0) out vec4 texBuffer4;
 #include "/libs/GbufferData.glsl"
 #ifdef HELIAN_SR_RR
     #include "/libs/OpaqueRRMaterial.glsl"
+    #ifdef HALF_RES_REFLECTION
+        layout(location=2) out vec2 rrMotion;
+        uniform sampler2D colortex27;
+        #include "/libs/ReflectionMotion.glsl"
+    #endif
     #ifdef HELIAN_VOXEL_RT
         #include "/libs/ReflectionFilter.glsl"
     #endif
 #endif
-#if defined REFLECTION && REFLECTION_MODE == 2
+#if (defined REFLECTION && REFLECTION_MODE == 2) || (defined HELIAN_SR_RR && defined HALF_RES_REFLECTION)
     #include "/libs/ReflectionRange.glsl"
 #endif
 
 #ifdef HALF_RES_REFLECTION
-float reflectionReceiverDepth(ivec2 p) {
-    float d = srTexelFetchLow(depthtex0, p, 0).r;
-    #ifdef LOD
-        if (d >= 1.0) return screenToViewDepthLod(getLodDepthWater((vec2(p)+0.5)/screenSize));
+void reflectionReceiver(ivec2 p,vec4 material,out vec3 n,out vec2 spec,out float id,out float depth) {
+    n=getNormalTexel(p);
+    spec=unpack2x8Bit(material.g);
+    id=round(unpackM3P13(material.a).x*7.0);
+    bool behind=false;
+    #ifdef HELIAN_SR_RR
+        behind=id==MAT_FORWARD_MODEL && srTexelFetchLow(colortex0,p,0).a<0.5;
+        if (behind) {
+            GbufferData m;readOpaqueRRMaterial(p,m);
+            n=m.normal;spec=vec2(m.smoothness,m.metalness);id=m.materialID;
+        }
     #endif
-    return screenToViewDepth(d);
+    float d=behind ? srTexelFetchLow(depthtex1,p,0).r : srTexelFetchLow(depthtex0,p,0).r;
+    #ifdef LOD
+        if (d>=1.0) {
+            vec2 uv=(vec2(p)+0.5)/screenSize;
+            depth=screenToViewDepthLod(behind ? getLodDepthSolid(uv) : getLodDepthWater(uv));
+            return;
+        }
+    #endif
+    depth=screenToViewDepth(d);
 }
 vec4 upscaleReflection(vec2 coord, ivec2 originTexel, vec4 originMaterialData) {
     ivec2 reflectionSize = srTextureSizeLow(colortex8, 0);
@@ -56,10 +76,12 @@ vec4 upscaleReflection(vec2 coord, ivec2 originTexel, vec4 originMaterialData) {
     ivec2 baseTexel = ivec2(floor(reflectionPosition));
     vec2 interpolation = fract(reflectionPosition);
 
-    vec3 originNormal = getNormalTexel(originTexel);
-    vec2 originSpecular = unpack2x8Bit(originMaterialData.g);
-    float originMaterialID = round(unpackM3P13(originMaterialData.a).x * 7.0);
-    float originDepth = reflectionReceiverDepth(originTexel);
+    vec3 originNormal;vec2 originSpecular;float originMaterialID,originDepth;
+    reflectionReceiver(originTexel,originMaterialData,originNormal,originSpecular,originMaterialID,originDepth);
+    #ifdef HELIAN_SR_RR
+        ivec2 bestTexel=ivec2(0);
+        float bestWeight=0.0,bestDistance=0.0;
+    #endif
 
     vec4 accumulation = vec4(0.0);
     float weightAccumulation = 0.0;
@@ -69,21 +91,36 @@ vec4 upscaleReflection(vec2 coord, ivec2 originTexel, vec4 originMaterialData) {
             vec2 sampleCoord = (vec2(reflectionTexel) + 0.5) / vec2(reflectionSize);
             ivec2 sampleTexel = clamp(ivec2(sampleCoord * screenSize), ivec2(0), ivec2(screenSize) - 1);
             vec4 sampleMaterialData = srTexelFetchLow(colortex2, sampleTexel, 0);
-            vec2 sampleSpecular = unpack2x8Bit(sampleMaterialData.g);
-            float sampleMaterialID = round(unpackM3P13(sampleMaterialData.a).x * 7.0);
+            vec3 sampleNormal;vec2 sampleSpecular;float sampleMaterialID,sampleDepth;
+            reflectionReceiver(sampleTexel,sampleMaterialData,sampleNormal,sampleSpecular,sampleMaterialID,sampleDepth);
+            if (sampleMaterialID!=originMaterialID) continue;
 
             vec2 axisWeight = mix(vec2(1.0) - interpolation, interpolation, vec2(x, y));
             float surfaceWeight =
-                pow(max(dot(originNormal, getNormalTexel(sampleTexel)), 0.0), 32.0) *
-                exp2(-64.0 * abs(originSpecular.x - sampleSpecular.x)) *
-                step(abs(originMaterialID - sampleMaterialID), 0.25);
-            float depthWeight = exp2(-abs(reflectionReceiverDepth(sampleTexel) - originDepth) / max(0.025, 0.015 * originDepth));
+                pow(max(dot(originNormal,sampleNormal),0.0),32.0) *
+                exp2(-64.0 * abs(originSpecular.x - sampleSpecular.x));
+            float depthWeight = exp2(-abs(sampleDepth-originDepth)/max(0.025,0.015*originDepth));
             float weight = axisWeight.x * axisWeight.y * surfaceWeight * depthWeight;
 
-            accumulation += srTexelFetchLow(colortex8, reflectionTexel, 0) * weight;
+            vec4 ray=texelFetch(colortex8,reflectionTexel,0);
+            #ifdef HELIAN_SR_RR
+                weight*=exp2(-32.0*abs(originSpecular.y-sampleSpecular.y));
+                // Pick distance and motion from one matching ray, rather
+                // than averaging foreground and background hit locations.
+                if (ray.w>0.0 && weight>bestWeight) {
+                    bestWeight=weight;bestTexel=reflectionTexel;bestDistance=ray.w;
+                }
+            #endif
+            accumulation += ray * weight;
             weightAccumulation += weight;
         }
     }
+    #ifdef HELIAN_SR_RR
+        if (bestWeight>1e-5) {
+            srSpecularHitDistance=clamp(bestDistance*far,0.0,65504.0);
+            rrMotion=texelFetch(colortex27,bestTexel,0).xy;
+        }
+    #endif
     return accumulation / max(weightAccumulation, 1e-6);
 }
 #endif
@@ -94,12 +131,33 @@ void main() {
 
     #ifdef HELIAN_SR_RR
         srSpecularHitDistance = 0.0;
+        #ifdef HALF_RES_REFLECTION
+            float guideDepth=srTexelFetchLow(depthtex0,texel,0).r;
+            float guideID=round(unpackM3P13(srTexelFetchLow(colortex2,texel,0).a).x*7.0);
+            bool behind=guideID==MAT_FORWARD_MODEL && srTexelFetchLow(colortex0,texel,0).a<0.5;
+            if (behind) guideDepth=srTexelFetchLow(depthtex1,texel,0).r;
+            if (guideID==MAT_HAND) guideDepth=decodeHandDepth(guideDepth);
+            bool guideSky=guideDepth>=1.0;
+            #ifdef LOD
+                if (guideSky) {
+                    guideDepth=1.0+(behind ? getLodDepthSolid(texcoord) : getLodDepthWater(texcoord));
+                    guideSky=guideDepth>=2.0;
+                }
+            #endif
+            rrMotion=srReflectionMotionVector(reflectionViewPosition(texcoord,guideDepth),guideSky);
+            if (guideSky) srSpecularHitDistance=65504.0;
+        #endif
     #endif
     vec3 reflectionColor = vec3(0.0);
     #ifdef REFLECTION
         #if REFLECTION_MODE == 2
             // Check the full-resolution receiver before the half-resolution upsample.
             // Otherwise neighbouring near-field hits bleed across the distance limit.
+            #if defined HELIAN_SR_RR && defined HALF_RES_REFLECTION
+            float primaryDepth=guideDepth;
+            float primarySmoothness=behind ? srTexelFetchLow(colortex12,texel,0).a :
+                unpack2x8Bit(srTexelFetchLow(colortex2,texel,0).g).x;
+            #else
             float primaryDepth = srTexelFetchLow(depthtex0, texel, 0).r;
             #ifdef LOD
                 if (primaryDepth == 1.0) primaryDepth += getLodDepthWater(texcoord);
@@ -108,23 +166,27 @@ void main() {
                 float id = round(unpackM3P13(srTexelFetchLow(colortex2, texel, 0).a).x * 7.0);
                 if (id == MAT_HAND) primaryDepth = decodeHandDepth(primaryDepth);
             }
+            float primarySmoothness=unpack2x8Bit(srTexelFetchLow(colortex2,texel,0).g).x;
+            #endif
             if (primaryDepth == 1.0 || primaryDepth >= 2.0 ||
-                unpack2x8Bit(srTexelFetchLow(colortex2, texel, 0).g).x < RT_MIN_SMOOTHNESS ||
+                primarySmoothness < RT_MIN_SMOOTHNESS ||
                 !rtInRange(viewToWorldPos(reflectionViewPosition(texcoord, primaryDepth)))) {
                 texBuffer4 = vec4(0.0);
                 return;
             }
         #endif
         #ifdef HALF_RES_REFLECTION
-            vec4 originData = srTextureLodLow(colortex8, texcoord, 0.0);
+            vec4 originData = vec4(0.0); // Filled only for reflective receivers below.
         #else
             vec4 originData = srTexelFetchScene(colortex4, texel, 0);
         #endif
         #ifdef HELIAN_SR_RR
-            #ifdef HELIAN_VOXEL_RT
+            #if defined HELIAN_VOXEL_RT && !defined HALF_RES_REFLECTION
                 originData = limitGlossyFirefly(originData,texel);
             #endif
-            srSpecularHitDistance = clamp(originData.w * far, 0.0, 65504.0);
+            #ifndef HALF_RES_REFLECTION
+                srSpecularHitDistance = clamp(originData.w * far, 0.0, 65504.0);
+            #endif
         #endif
         #ifndef HALF_RES_REFLECTION
         if (originData.w > 1e-6)
@@ -152,23 +214,22 @@ void main() {
                     }
                 #endif
 
+                #ifdef LABPBR_F0
+                    metalness = step(229.5 / 255.0, metalness);
+                #endif
+                float reflectionWeight = 1.0;
+                if (waterDepth == solidDepth) {
+                    float diffuseWeight = pow(1.0 - smoothness, 5.0);
+                    #ifndef FULL_REFLECTION
+                        diffuseWeight = 1.0 - (1.0 - diffuseWeight) * sqrt(clamp(smoothness - (1.0 - smoothness) * (1.0 - 0.6666 * metalness), 0.0, 1.0));
+                    #endif
+                    reflectionWeight = 1.0 - diffuseWeight;
+                }
                 #ifdef HALF_RES_REFLECTION
-                    originData = upscaleReflection(texcoord, texel, rawMaterialData);
+                    if (reflectionWeight>0.0) originData=upscaleReflection(texcoord,texel,rawMaterialData);
                 #endif
 
-                if (originData.w > 1e-6) {
-                    #ifdef LABPBR_F0
-                        metalness = step(229.5 / 255.0, metalness);
-                    #endif
-                    float reflectionWeight = 1.0;
-                    if (waterDepth == solidDepth) {
-                        float diffuseWeight = pow(1.0 - smoothness, 5.0);
-                        #ifndef FULL_REFLECTION
-                            diffuseWeight = 1.0 - (1.0 - diffuseWeight) * sqrt(clamp(smoothness - (1.0 - smoothness) * (1.0 - 0.6666 * metalness), 0.0, 1.0));
-                        #endif
-                        reflectionWeight *= 1.0 - diffuseWeight;
-                    }
-
+                if (reflectionWeight>0.0 && originData.w>1e-6) {
                     #if REFLECTION_FILTER > 0 && !defined HELIAN_SR_RR
                         float originReflectionDepth = originData.w;
                         float originSmoothness = smoothness;
@@ -227,7 +288,7 @@ void main() {
         }
     #endif
 
-    #ifdef HELIAN_SR_RR
+    #if defined HELIAN_SR_RR && !defined HALF_RES_REFLECTION
         bool skyPixel = srTextureLodLow(depthtex0, texcoord, 0.0).r >= 1.0;
         #ifdef LOD
             skyPixel = skyPixel && getLodDepthWater(texcoord) >= 1.0;
@@ -238,7 +299,11 @@ void main() {
 }
 
 #ifdef HELIAN_SR_RR
-/* RENDERTARGETS: 4,14 */
+    #ifdef HALF_RES_REFLECTION
+        /* RENDERTARGETS: 4,14,15 */
+    #else
+        /* RENDERTARGETS: 4,14 */
+    #endif
 #else
 /* DRAWBUFFERS:4 */
 #endif

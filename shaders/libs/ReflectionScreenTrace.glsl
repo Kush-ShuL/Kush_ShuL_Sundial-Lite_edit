@@ -1,12 +1,11 @@
 #if REFLECTION_MODE != 2
-uniform sampler2D colortex10, colortex21;
+uniform usampler2D colortex24;
+uniform sampler2D colortex21;
 float reflectionSceneDepth(vec2 uv, out bool model) {
     ivec2 p=clamp(ivec2(uv*screenSize),ivec2(0),ivec2(screenSize)-1);
-    float packedD=uintBitsToFloat(srTexelFetchLow(colortex6,p,0).r);
-    float d=packedD-float(packedD>1.0);
-    float md=srTexelFetchLow(colortex10,p,0).r;
-    model=packedD<=1.0 && md<1.0 && (d<0.0 || md<=d);
-    return model ? md : d;
+    uint value=texelFetch(colortex24,p,0).r;
+    model=(value&0x40000000u)!=0u;
+    return uintBitsToFloat(value&~0x40000000u);
 }
 vec4 traceScreenReflection(vec3 viewPos, vec3 rayDir, out vec3 hitView) {
     vec4 projDirection = vec4(vec3(gbufferProjection[0].x, gbufferProjection[1].y, gbufferProjection[2].z) * rayDir, -rayDir.z);

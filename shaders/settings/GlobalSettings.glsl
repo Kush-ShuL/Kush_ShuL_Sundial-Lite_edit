@@ -158,7 +158,3 @@
     // SR owns anti-aliasing; spatial algorithms receive an unjittered scene.
     #undef TAA
 #endif
-#ifdef HELIAN_SR_RR
-    // Give RR dense, unfiltered SSR samples and let it reconstruct the noise.
-    #undef HALF_RES_REFLECTION
-#endif

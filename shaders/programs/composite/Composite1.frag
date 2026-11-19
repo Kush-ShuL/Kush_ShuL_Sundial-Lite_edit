@@ -48,6 +48,7 @@ void main() {
     #ifdef HELIAN_VOXEL_RT
         reflectionColor = limitGlossyFirefly(reflectionColor,texel);
     #endif
+    #ifndef HELIAN_SR_RR
     if (reflectionColor.w > 1e-6) {
         float depth = getWaterDepth(texcoord);
         #ifdef LOD
@@ -57,6 +58,7 @@ void main() {
             reflectionColor = reflectionFilter(reflectionColor, texel, 6.0, false);
         }
     }
+    #endif
     #ifdef HALF_RES_REFLECTION
         texBuffer8 = reflectionColor;
     #else

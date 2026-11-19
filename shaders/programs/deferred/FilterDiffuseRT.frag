@@ -2,6 +2,7 @@ in vec2 texcoord;
 uniform vec2 prevTaaOffset;
 layout(location = 0) out vec4 filteredGI;
 layout(location = 1) out vec4 filteredDirect;
+layout(location = 2) out uint resolveMask;
 #include "/settings/GlobalSettings.glsl"
 #include "/libs/Uniform.glsl"
 #include "/libs/GbufferData.glsl"
@@ -9,8 +10,25 @@ uniform sampler2D colortex20;
 uniform sampler2D colortex22,colortex23;
 /*
 const int colortex23Format = RGBA16F;
+const int colortex26Format = R32UI;
 */
 const bool colortex23Clear = false;
+
+// These comparisons depend only on the low-resolution neighbourhood. All
+// full-resolution receivers sharing the footprint can reuse them exactly.
+uint buildResolveMask(ivec2 p,ivec2 size) {
+    ivec2 g=min(ivec2((vec2(p)+0.5)/vec2(size)*screenSize),ivec2(screenSize)-1);
+    vec2 n=srTexelFetchLow(colortex1,g,0).zw;
+    uint mask=0u;
+    for (int y=-1;y<=1;++y) for (int x=-1;x<=1;++x) {
+        ivec2 q=clamp(p+ivec2(x,y),ivec2(0),size-1);
+        ivec2 qg=min(ivec2((vec2(q)+0.5)/vec2(size)*screenSize),ivec2(screenSize)-1);
+        uint bit=1u<<uint((y+1)*3+x+1);
+        if (texelFetch(colortex22,q,0).w>0.0) mask|=bit;
+        if (any(notEqual(srTexelFetchLow(colortex1,qg,0).zw,n))) mask|=bit<<9u;
+    }
+    return mask;
+}
 
 vec4 filterDirect(ivec2 p,ivec2 size) {
     vec4 center=texelFetch(colortex22,p,0);
@@ -56,6 +74,7 @@ vec4 filterDirect(ivec2 p,ivec2 size) {
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy), size = srTextureSizeLow(colortex20,0);
     if (any(greaterThanEqual(p,size))) discard;
+    resolveMask=buildResolveMask(p,size);
     filteredDirect=filterDirect(p,size);
     vec4 center = texelFetch(colortex20,p,0);
     filteredGI = center;
@@ -88,4 +107,4 @@ void main() {
     }
     filteredGI.rgb = max(vec3(0.0),sum/max(weights,1e-5));
 }
-/* RENDERTARGETS: 20,23 */
+/* RENDERTARGETS: 20,23,26 */
