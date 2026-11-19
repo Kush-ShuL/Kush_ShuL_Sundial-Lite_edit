@@ -31,6 +31,8 @@ in vec3 skyColorUp;
 #include "/libs/Cloud.glsl"
 #include "/libs/GbufferData.glsl"
 
+#include "/libs/SkyBackground.glsl"
+
 #ifdef HELIAN_SR_INPUTS
 // Temporary cloud guides; composite6 replaces these with final motion vectors.
 layout(location = 1) out vec2 srCloudGuide;
@@ -70,9 +72,8 @@ void main() {
     }
     else {
         backDepth = 0.0;
-        solidColor.rgb = singleAtmosphereScattering(solidColor.rgb, gbufferModelViewInverse[3].xyz, worldDir, sunDirection, intersectionData, (30.0), backColor);
+        solidColor.rgb = skyBackground(solidColor.rgb, gbufferModelViewInverse[3].xyz, worldDir, intersectionData, backColor, planeCloud);
         #ifdef PLANE_CLOUD
-            planeCloud = planeClouds(gbufferModelViewInverse[3].xyz, worldDir, sunDirection, skyColorUp, intersectionData.xyz);
             #ifdef HELIAN_SR_INPUTS
                 planeCoverage = planeCloud.a;
                 vec2 planeIntersection = raySphereIntersection(intersectionData.x, intersectionData.y, -pow2(planeCloudHeight));
@@ -80,10 +81,7 @@ void main() {
                 planeDepth = cameraHeight > planeCloudHeight ? planeIntersection.x : planeIntersection.y;
             #endif
         #endif
-        if (gbufferModelViewInverse[3].y + cameraPosition.y + WORLD_BASIC_HEIGHT - 500.0 < PLANE_CLOUD_HEIGHT) {
-            solidColor.rgb = mix(solidColor.rgb, planeCloud.rgb, planeCloud.a);
-            planeCloud.a = 0.0;
-        }
+        blendLowerSkyPlane(solidColor.rgb, planeCloud, gbufferModelViewInverse[3].y);
     }
     float cloudDepth;
     solidColor = sampleClouds(

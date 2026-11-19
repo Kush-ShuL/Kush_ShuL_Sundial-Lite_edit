@@ -7,6 +7,24 @@ float reflectionSceneDepth(vec2 uv, out bool model) {
     model=(value&0x40000000u)!=0u;
     return uintBitsToFloat(value&~0x40000000u);
 }
+#ifdef SHADOW_AND_SKY
+float reflectionSkyVisibility(vec3 viewRay, float worldY, float skylight) {
+    if (viewRay.z < -1e-5) {
+        vec2 uv = 0.5 + 0.5 * viewToProjectionPos(viewRay).xy;
+        #if defined TAA || defined HELIAN_SR_JITTER
+            uv += 0.5 * taaOffset;
+        #endif
+        if (all(greaterThanEqual(uv,vec2(0.0))) && all(lessThan(uv,vec2(1.0)))) {
+            bool model;
+            float depth = reflectionSceneDepth(uv, model);
+            // With distant terrain enabled the cleared sky is encoded as -1.
+            return float(!model && abs(depth) == 1.0);
+        }
+    }
+    // Outside the depth buffer we have no evidence of an opening.
+    return smoothstep(14.0/15.0, 1.0, skylight) * smoothstep(0.0, 0.05, worldY);
+}
+#endif
 vec4 traceScreenReflection(vec3 viewPos, vec3 rayDir, out vec3 hitView) {
     vec4 projDirection = vec4(vec3(gbufferProjection[0].x, gbufferProjection[1].y, gbufferProjection[2].z) * rayDir, -rayDir.z);
     vec4 originProjPos = vec4(vec3(gbufferProjection[0].x, gbufferProjection[1].y, gbufferProjection[2].z) * viewPos, -viewPos.z);
@@ -15,6 +33,7 @@ vec4 traceScreenReflection(vec3 viewPos, vec3 rayDir, out vec3 hitView) {
     originProjPos.xy += gbufferProjection[2].xy * viewPos.z;
     #if defined TAA || defined HELIAN_SR_JITTER
         originProjPos.xy += taaOffset * originProjPos.w;
+        projDirection.xy += taaOffset * projDirection.w;
     #endif
     float traceLength = projIntersectionScreenEdge(originProjPos, projDirection);
 

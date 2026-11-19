@@ -74,6 +74,20 @@ in vec2 texcoord;
 #include "/libs/GbufferData.glsl"
 #include "/libs/Shadow.glsl"
 
+#ifdef SHADOW_AND_SKY
+    #include "/libs/SkyBackground.glsl"
+    vec3 glassSky(vec3 dir) {
+        vec3 origin=gbufferModelViewInverse[3].xyz;
+        vec4 intersection=planetIntersectionData(origin,dir), plane;
+        vec3 scattering;
+        vec3 sky=skyBackground(vec3(0.0),origin,dir,intersection,scattering,plane);
+        blendLowerSkyPlane(sky,plane,origin.y);
+        float cloudDepth;
+        sky=sampleClouds(sky,scattering,origin,dir,shadowDirection,sunDirection,skyColorUp,intersection.xyz,0.0,cloudDepth).rgb;
+        return mix(sky,plane.rgb,plane.a);
+    }
+#endif
+
 // Only filter taps whose visible background (including translucent entities)
 // lies behind the refracting surface. Keep the unshifted pixel if all are in front.
 vec3 refractionViewPos(vec2 uv,float depth) {
@@ -85,8 +99,10 @@ vec3 refractionViewPos(vec2 uv,float depth) {
 
 // Follow both parts of the ray (inside the slab, then parallel to the
 // incident ray). In screen space the second segment ends at the original UV.
+// Zero means off-screen or in front of this leg. Sky is a valid background
+// at infinity; it must not be confused with either of those cases.
 float glassReceiverZ(vec2 uv,vec3 front,vec3 face) {
-    if (any(lessThan(uv,vec2(0))) || any(greaterThanEqual(uv,vec2(1)))) return -1e20;
+    if (any(lessThan(uv,vec2(0))) || any(greaterThanEqual(uv,vec2(1)))) return 0.0;
     ivec2 p=ivec2(uv*screenSize);
     uv=(vec2(p)+0.5)/screenSize;
     float d=srTexelFetchLow(depthtex1,p,0).r;
@@ -95,7 +111,7 @@ float glassReceiverZ(vec2 uv,vec3 front,vec3 face) {
     #endif
     vec3 bg=refractionViewPos(uv,d);
     bool sky=d==1.0 || d>=2.0;
-    float z=!sky && dot(bg-front,face)<0.0 ? bg.z : -1e20;
+    float z=sky ? -1e20 : (dot(bg-front,face)<-1e-5 ? bg.z : 0.0);
     float m=srTexelFetchLow(colortex10,p,0).r;
     if (m<min(d,1.0) && srTexelFetchLow(colortex21,p,0).a>=0.5) {
         vec3 model=refractionViewPos(uv,m);
@@ -104,52 +120,112 @@ float glassReceiverZ(vec2 uv,vec3 front,vec3 face) {
     return z;
 }
 
-vec2 glassOffset(vec2 uv,vec3 front,vec3 bent,vec3 face,float thickness) {
+float refractionEdgeScale(vec2 uv,vec2 offset) {
+    vec2 toEdge=mix(uv,1.0-uv,greaterThan(offset,vec2(0.0)))/max(abs(offset),vec2(1e-8));
+    float t=min(toEdge.x,toEdge.y);
+    if (t>=1.0/(1.0-REFRACTION_EDGE_FADE)) return 1.0;
+    return t+pow2(REFRACTION_EDGE_FADE*t)/(-1.0+(1.0-2.0*REFRACTION_EDGE_FADE)*t);
+}
+
+bool glassCrossing(float z,float rayInvDepth) {
+    return z<0.0 && z>-1e19 && -1.0/z>=rayInvDepth;
+}
+
+vec2 glassOffset(vec2 uv,vec3 front,vec3 bent,vec3 face,float thickness,out vec3 samplePlane,out bool clippedBackground) {
+    samplePlane=front;
+    clippedBackground=false;
     vec3 back=front+bent*(thickness/max(0.001,-dot(bent,face)));
-    if (back.z>=-0.001) return vec2(0);
-    vec2 span=0.5*REFRACTION_STRENGTH*(viewToProjectionPos(back).xy-viewToProjectionPos(front).xy);
+    if (REFRACTION_STRENGTH==0.0 || back.z>=-0.001) return vec2(0);
+    vec2 span=0.5*(viewToProjectionPos(back).xy-viewToProjectionPos(front).xy);
+    // Fade the path before testing it, keeping the exit on the rear face.
+    // Moving a verified lookup afterwards can put it back on the window frame.
+    float edge=refractionEdgeScale(uv,span);
+    if (edge<1.0) {
+        vec3 straight=normalize(front);
+        back=mix(front+straight*(thickness/max(0.001,-dot(straight,face))),back,edge);
+        span=0.5*(viewToProjectionPos(back).xy-viewToProjectionPos(front).xy);
+    }
     float pixels=length(span*screenSize);
     if (pixels<0.1) return vec2(0);
     int steps=int(clamp(ceil(pixels*0.5),1.0,8.0));
+    // Keep a coplanar receiver (e.g. a lamp touching the glass) on the
+    // background side despite depth quantization at grazing angles.
+    vec3 rearPlane=back+face*clamp(2e-5*back.z*back.z,0.0005,0.01);
+    float visible=2.0;
     for (int leg=0;leg<2;++leg) {
         // Reciprocal view depth is linear along a projected segment.
         float start=leg==0 ? 0.0 : 1.0, end=1.0-start;
         float iz0=leg==0 ? -1.0/front.z : -1.0/back.z;
         float iz1=leg==0 ? -1.0/back.z : 0.0;
+        vec3 plane=leg==0 ? front : back;
+        if (leg==1) {
+            vec2 exitUV=uv+span;
+            float z=glassReceiverZ(exitUV,rearPlane,face);
+            if (z<0.0) visible=1.0;
+            if (z<0.0 && z>-1e19) {
+                vec2 center=(floor(exitUV*screenSize)+0.5)/screenSize;
+                vec3 v=refractionViewPos(center,0.5);
+                if (dot(v*(z/v.z)-back,face)>=-dot(rearPlane-back,face)) {
+                    samplePlane=rearPlane;
+                    return span;
+                }
+            }
+        }
         float lo=0.0;
         for (int i=1;i<=steps;++i) {
             float hi=float(i)/float(steps);
             vec2 at=uv+span*mix(start,end,hi);
-            float z=glassReceiverZ(at,front,face);
-            if (z>-1e19 && -1.0/z>=mix(iz0,iz1,hi)) {
+            float z=glassReceiverZ(at,plane,face);
+            if (glassCrossing(z,mix(iz0,iz1,hi))) {
                 // Refine the first crossing, not a second guessed background
                 // plane. At a silhouette only keep a depth-consistent hit.
-                for (int j=0;j<4;++j) {
+                for (int j=0;j<10 && (hi-lo)*pixels>0.125;++j) {
                     float mid=0.5*(lo+hi);
-                    float mz=glassReceiverZ(uv+span*mix(start,end,mid),front,face);
-                    if (mz>-1e19 && -1.0/mz>=mix(iz0,iz1,mid)) {hi=mid;z=mz;}
+                    float mz=glassReceiverZ(uv+span*mix(start,end,mid),plane,face);
+                    if (glassCrossing(mz,mix(iz0,iz1,mid))) {hi=mid;z=mz;}
                     else lo=mid;
                 }
-                if (abs(iz1-iz0)<1e-8) return span*mix(start,end,hi);
+                if (abs(iz1-iz0)<1e-8) {samplePlane=plane;return span*mix(start,end,hi);}
                 float hit=(-1.0/z-iz0)/(iz1-iz0);
-                if (hit>=lo-0.02 && hit<=hi+0.02)
-                    return span*mix(start,end,clamp(hit,0.0,1.0));
-                // A foreground silhouette has no represented surface behind
-                // it in the colour buffer. Keep the original view there.
-                return vec2(0);
+                if (hit>=lo-1.0/pixels && hit<=hi+1.0/pixels) {
+                    samplePlane=plane;
+                    return span*mix(start,end,clamp(hit,lo,hi));
+                }
+                // This is a depth discontinuity, not a ray/surface intersection.
+                // Keep following the ray beyond the slab instead of restarting at the camera pixel.
+                break;
             }
+            if (leg==1 && z<0.0) visible=1.0-hi;
             lo=hi;
         }
     }
-    return vec2(0);
+    samplePlane=back;
+    if (visible>1.0) {samplePlane=front;return vec2(0.0);}
+    if (visible==0.0) return vec2(0.0);
+    // Determine which background is hidden without using the silhouette as
+    // its texture coordinate. Near the horizon the exit can see other terrain.
+    float hidden=max(0.0,visible-1.0/float(steps));
+    for (int j=0;j<10 && (visible-hidden)*pixels>0.125;++j) {
+        float mid=0.5*(visible+hidden);
+        float z=glassReceiverZ(uv+span*mid,back,face);
+        if (z<0.0 && !glassCrossing(z,mid/(-back.z))) visible=mid;
+        else hidden=mid;
+    }
+    clippedBackground=true;
+    float witness=glassReceiverZ(uv+span*visible,back,face);
+    if (witness < -1e19) return span*visible; // sky colour is evaluated by direction
+    float interior=0.5*(1.0+visible);
+    float z=glassReceiverZ(uv+span*interior,back,face);
+    return span*(z<0.0 && z>-1e19 ? interior : visible);
 }
 
-float refractedBackground(vec2 target, vec3 front, vec3 faceNormal, out vec3 rgb, out float depth, out vec2 depthUV) {
+float refractedBackground(vec2 target, vec3 front, vec3 faceNormal, bool hidden, out float skyWeight, out vec3 rgb, out float depth, out vec2 depthUV) {
     vec2 grid = target * screenSize - 0.5;
     ivec2 base = ivec2(floor(grid));
     vec2 f = fract(grid);
     float sum = 0.0, best = 0.0;
     rgb = vec3(0.0);
+    skyWeight = 0.0;
     for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
         ivec2 p=base+ivec2(x,y);
         if (any(lessThan(p,ivec2(0))) || any(greaterThanEqual(p,ivec2(screenSize)))) continue;
@@ -161,16 +237,22 @@ float refractedBackground(vec2 target, vec3 front, vec3 faceNormal, out vec3 rgb
         if (uintBitsToFloat(srTexelFetchLow(colortex6,p,0).r)>1.0) continue;
         if (dot(refractionViewPos(uv,d)-front,faceNormal)>=0.0) continue;
         vec3 tap = srTexelFetchScene(colortex3,p,0).rgb;
+        float skyTap = 0.0;
+        #ifdef SHADOW_AND_SKY
+            if (hidden && (d==1.0 || d>=2.0)) {skyTap=1.0;tap=vec3(0.0);}
+        #endif
         float modelD = srTexelFetchLow(colortex10,p,0).r;
         if (modelD < 1.0 && modelD <= d && dot(refractionViewPos(uv,modelD)-front,faceNormal)<0.0) {
             vec4 layer = srTexelFetchLow(colortex21,p,0);
             tap = layer.rgb + (1.0 - layer.a) * tap;
+            skyTap *= 1.0 - layer.a;
             if (layer.a >= 0.5) d = modelD;
         }
         vec2 w = mix(1.0-f, f, vec2(x,y));
         float weight = w.x*w.y;
         rgb += tap * weight;
         sum += weight;
+        skyWeight += skyTap*weight;
         if (weight > best) { best = weight; depth = d; depthUV = uv; }
     }
     return clamp(sum,0.0,1.0); // rgb retains the valid bilinear weights.
@@ -303,6 +385,8 @@ void main() {
             vec3 face = faceforward(normalize(gbufferData.geoNormal),incident,gbufferData.geoNormal);
             vec3 n = faceforward(normalize(gbufferData.normal),incident,gbufferData.normal);
             vec2 refractionOffset;
+            vec3 samplePlane=waterViewPos;
+            bool clippedBackground=false;
             if (isTargetWater) {
                 // Keep water's wave distortion relative to its flat interface.
                 vec3 bent = refract(incident,n,1.0/1.333)-refract(incident,face,1.0/1.333);
@@ -311,24 +395,33 @@ void main() {
                     * vec2(gbufferProjection[0].x,gbufferProjection[1].y)*0.5*min(gap,2.0)/max(0.01,-waterViewPos.z);
             } else {
                 float thickness=gbufferData.parallaxOffset>0.0 ? gbufferData.parallaxOffset : 1.0;
-                refractionOffset=glassOffset(texcoord,waterViewPos,refract(incident,n,1.0/1.5),face,thickness);
+                float eta=1.0/(1.0+0.5*REFRACTION_STRENGTH);
+                refractionOffset=glassOffset(texcoord,waterViewPos,refract(incident,n,eta),face,thickness,samplePlane,clippedBackground);
                 gbufferData.parallaxOffset=0.0;
             }
-            if (isTargetWater) refractionOffset*=REFRACTION_STRENGTH;
-            vec2 screenEdgeIntersection = mix(texcoord, 1.0 - texcoord, greaterThan(refractionOffset,vec2(0.0))) / max(abs(refractionOffset),vec2(1e-8));
-            float screenEdgeLength = min(screenEdgeIntersection.x, screenEdgeIntersection.y);
-            if (screenEdgeLength < 1.0 / (1.0 - REFRACTION_EDGE_FADE)) {
-                refractionOffset *= screenEdgeLength + pow2(REFRACTION_EDGE_FADE * screenEdgeLength) / (-1.0 + (1.0 - 2.0 * REFRACTION_EDGE_FADE) * screenEdgeLength);
+            if (isTargetWater) {
+                refractionOffset*=REFRACTION_STRENGTH;
+                refractionOffset*=refractionEdgeScale(texcoord,refractionOffset);
             }
 
             vec2 refractionTarget = texcoord + refractionOffset;
             float targetSolidDepth;
             vec3 targetColor;
             vec2 depthUV;
-            float coverage=refractedBackground(refractionTarget,waterViewPos,face,targetColor,targetSolidDepth,depthUV);
+            float skyWeight;
+            float coverage=refractedBackground(refractionTarget,samplePlane,face,clippedBackground,skyWeight,targetColor,targetSolidDepth,depthUV);
             if (coverage>0.0) {
+                bool distantSky=targetSolidDepth==1.0 || targetSolidDepth>=2.0;
+                #ifdef SHADOW_AND_SKY
+                    // A parallel slab preserves the outgoing sky direction.
+                    // The exit pixel tells us sky is visible, not its colour.
+                    if (skyWeight>0.0)
+                        targetColor+=skyWeight*glassSky(normalize(mat3(gbufferModelViewInverse)*incident));
+                #endif
+                if (clippedBackground) {targetColor/=coverage;coverage=1.0;}
                 solidColor.rgb=targetColor+(1.0-coverage)*solidColor.rgb;
-                vec3 refractedView=mix(viewPos,refractionViewPos(depthUV,targetSolidDepth),coverage);
+                vec2 fogUV=!isTargetWater && distantSky ? texcoord : depthUV;
+                vec3 refractedView=mix(viewPos,refractionViewPos(fogUV,targetSolidDepth),coverage);
                 worldPos=mat3(gbufferModelViewInverse)*refractedView;
                 if (coverage>=0.999) solidDepth=targetSolidDepth;
             }

@@ -172,6 +172,13 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
             if (reflectionColor.w == 0.0) reflectionColor = traceScreenReflection(viewPos, rayDir, hitView);
         #endif
         bool hitSky = reflectionColor.w == 0.0;
+        float skyVisibility = 1.0;
+        #if REFLECTION_MODE != 2 && defined SHADOW_AND_SKY && (defined LIGHT_LEAKING_FIX || REFLECTION_MODE == 1)
+            if (hitSky) {
+                skyVisibility = reflectionSkyVisibility(rayDir, worldRay.y, gbufferData.lightmap.y);
+                if (skyVisibility <= 0.0) return vec4(0.0);
+            }
+        #endif
         rayDir = worldRay;
         if (!hitSky) {
             #ifdef HELIAN_SR_RR
@@ -191,9 +198,6 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
             float rayLength = 114514.0;
             reflectionColor = vec4(vec3(0.0), rayLength);
             #ifdef SHADOW_AND_SKY
-                #ifdef LIGHT_LEAKING_FIX
-                if (eyeBrightnessSmooth.y>0) {
-                #endif
                 vec3 atmosphere;
                 reflectionColor.rgb = singleAtmosphereScattering(vec3(0.0), worldPos, rayDir, sunDirection, intersectionData, 30.0, atmosphere);
                 vec4 planeCloud = vec4(0.0);
@@ -208,10 +212,6 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
                 if (worldPos.y + cameraPosition.y >= PLANE_CLOUD_HEIGHT) {
                     reflectionColor.rgb = mix(reflectionColor.rgb, planeCloud.rgb, planeCloud.a);
                 }
-                #ifdef LIGHT_LEAKING_FIX
-                    reflectionColor.rgb *= clamp(eyeBrightnessSmooth.y / 16.0, 0.0, 1.0);
-                }
-                #endif
             #endif
             #endif
         }
@@ -240,7 +240,7 @@ vec4 reflectionSample(GbufferData gbufferData, vec3 f0, vec3 f82, float firstWei
         else if (isEyeInWater == 3) {
             reflectionColor.rgb = snowFogTotal(reflectionColor.rgb, skyColorUp, reflectionColor.w, eyeBrightnessSmooth.y / 240.0);
         }
-        reflectionColor.rgb = max(vec3(0.0), reflectionColor.rgb * brdfWeight);
+        reflectionColor.rgb = max(vec3(0.0), reflectionColor.rgb * brdfWeight * skyVisibility);
         #ifdef HELIAN_SR_RR
             reflectionColor.w = min(65504.0, reflectionColor.w) / far;
         #else

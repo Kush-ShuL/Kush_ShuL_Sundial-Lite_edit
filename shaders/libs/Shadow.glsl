@@ -28,16 +28,18 @@ const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
         return caustic;
     }
 
-    float basicSunlight = (1.0 - sqrt(0)) * 9.5 * SUNLIGHT_BRIGHTNESS;
+    float originalSunlightStrength() {
+        return (1.0 - sqrt(weatherStrength)) * 9.5 * SUNLIGHT_BRIGHTNESS;
+    }
 
     void singleSampleShadow(
         vec3 worldPos, vec3 geoNormal, float NdotL, float lightFactor, float smoothness,
         float porosity, float skyLight, inout vec3 shadow, inout vec3 subsurfaceScattering
     ) {
-        basicSunlight = 8.0 * SUNLIGHT_BRIGHTNESS - 8.0 * SUNLIGHT_BRIGHTNESS * sqrt(weatherStrength) * SUNLIGHTINRAIN;
+        float basicSunlight = originalSunlightStrength();
         shadow *= basicSunlight;
         subsurfaceScattering *= basicSunlight * clamp(SUBSERFACE_SCATTERING_STRENTGH * 1e+10, 0.0, 1.0);
-        if (true) {
+        if (weatherStrength < 0.999) {
             vec3 sssShadowCoord = worldPosToShadowCoordNoDistort(worldPos);
             float normalFactor = clamp(pow(NdotL, pow2(1.0 - min(0.3, smoothness))), 0.0, 1.0);
             worldPos += geoNormal * ((length(worldPos) * 2e-3 + 2e-2) * (1.0 + sqrt(1.0 - NdotL))) * 4096.0 / realShadowMapResolution;
@@ -65,7 +67,7 @@ const float realShadowMapResolution = shadowMapResolution * MC_SHADOW_QUALITY;
                 }
 
                 #ifdef TRANSPARENT_SHADOW
-                    vec3 transmission=glassTransmission(shadowCoord);
+                    vec3 transmission = glassTransmission(shadowCoord);
                     shadow *= transmission;
                     subsurfaceScattering *= transmission;
                 #endif
